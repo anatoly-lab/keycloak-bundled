@@ -337,23 +337,66 @@ class RememberMeAuthenticatorIT {
      * built-in flows are immutable in Keycloak 26 (the admin UI surfaces this
      * as the "built-in" badge; the REST API rejects mutations with 400).
      *
+     * <p><b>Placement matters.</b> The default browser flow's top level is:
+     * <pre>
+     *   auth-cookie                  (ALTERNATIVE)
+     *   identity-provider-redirector (ALTERNATIVE)
+     *   forms                        (ALTERNATIVE sub-flow)
+     *     ├── username-password-form (REQUIRED)
+     *     └── Browser - Conditional 2FA (CONDITIONAL sub-flow)
+     * </pre>
+     * Adding a REQUIRED execution at the TOP level breaks the flow: Keycloak's
+     * DefaultAuthenticationFlow logs
+     * "REQUIRED and ALTERNATIVE elements at same level! Those alternative
+     * executions will be ignored" and the auth-cookie / IdP / forms branches
+     * never run, so credentials can't be validated. The plugin must be added
+     * <em>inside</em> the {@code forms} sub-flow (after the username/password
+     * form), which is the "post-authentication" placement called out in
+     * CLAUDE.md.
+     *
+     * <p><b>Sub-flow alias source-of-truth.</b> Per Keycloak 26.5 source
+     * ({@code AuthenticationManagementResource#recurseExecutions}), the
+     * {@code AuthenticationExecutionInfoRepresentation} returned by GET
+     * /executions exposes a sub-flow's alias via the {@code displayName}
+     * field (the rep has no {@code subFlowAlias} / {@code flowAlias} field —
+     * its {@code alias} field is reserved for authenticator-config aliases
+     * on configurable leaf executions). The {@code authenticationFlow: true}
+     * marker disambiguates a sub-flow row from a leaf authenticator.
+     *
+     * <p><b>Copied sub-flow naming.</b> Per {@code AuthenticationManagementResource#copy},
+     * when the built-in {@code browser} flow is copied to {@code rmtest-browser},
+     * each nested sub-flow's alias is rewritten as
+     * {@code <newName> + " " + <originalSubFlowAlias>}, so the {@code forms}
+     * sub-flow becomes {@code "rmtest-browser forms"} (and
+     * {@code "Browser - Conditional 2FA"} becomes
+     * {@code "rmtest-browser Browser - Conditional 2FA"}). The forms sub-flow
+     * is therefore identified here as the {@code authenticationFlow: true}
+     * row whose {@code displayName} ends with " forms" (matching the built-in
+     * {@code LOGIN_FORMS_FLOW = "forms"} constant in
+     * {@code DefaultAuthenticationFlows}).
+     *
      * Sequence:
      *   1. POST .../flows/browser/copy → create {@code rmtest-browser}
-     *   2. POST .../flows/{rmtest-browser}/executions/execution with body
+     *   2. GET .../flows/{rmtest-browser}/executions → locate the forms
+     *      sub-flow's alias (via {@code displayName}). Fail loudly with the
+     *      full executions JSON if it can't be found — better than silently
+     *      falling back to the top-level flow, which is what produced the
+     *      original "REQUIRED and ALTERNATIVE elements at same level" bug.
+     *   3. POST .../flows/{formsSubFlowAlias}/executions/execution with body
      *      {@code {"provider":"remember-me-authenticator"}}. Confirmed against
      *      Keycloak source (AuthenticationManagementResource#addExecutionToFlow):
      *      the body key is {@code provider}, NOT {@code authenticator} or
      *      {@code providerId}. Keycloak initialises the requirement to
      *      {@code DISABLED} when the factory exposes >1 choice (ours exposes
-     *      three), so we have to flip it ourselves in step 3.
-     *   3. GET .../flows/{rmtest-browser}/executions → locate the new
-     *      execution by {@code providerId} (this GET returns
-     *      {@code AuthenticationExecutionInfoRepresentation} which uses
-     *      {@code providerId}; the POST above used {@code provider} — same
-     *      value, different field names on each direction).
-     *   4. PUT .../flows/{rmtest-browser}/executions with the execution
+     *      three), so we have to flip it ourselves in step 5.
+     *   4. GET .../flows/{rmtest-browser}/executions → locate the new
+     *      execution by {@code providerId}. (We GET on the TOP-LEVEL flow
+     *      because the PUT update endpoint operates on the parent top-level
+     *      flow and resolves executions by id, and the recursive listing on
+     *      the top-level flow includes nested executions too.)
+     *   5. PUT .../flows/{rmtest-browser}/executions with the execution
      *      representation and {@code requirement: "REQUIRED"}.
-     *   5. PUT .../realms/{rmtest} setting {@code browserFlow} to the new
+     *   6. PUT .../realms/{rmtest} setting {@code browserFlow} to the new
      *      alias so the OIDC /auth endpoint actually invokes our flow.
      */
     private static void wireRememberMeIntoBrowserFlow(String adminToken) {
@@ -366,17 +409,52 @@ class RememberMeAuthenticatorIT {
                 .then()
                 .statusCode(201);
 
+        // Step 2 — locate the forms sub-flow alias inside the copied flow.
+        List<Map<String, Object>> executionsBeforeAdd = given()
+                .header("Authorization", "Bearer " + adminToken)
+                .accept(ContentType.JSON)
+                .when()
+                .get("/admin/realms/" + TEST_REALM
+                        + "/authentication/flows/" + TEST_BROWSER_FLOW + "/executions")
+                .then()
+                .statusCode(200)
+                .extract()
+                .jsonPath()
+                .getList("$");
+
+        String formsSubFlowAlias = executionsBeforeAdd.stream()
+                .filter(e -> Boolean.TRUE.equals(e.get("authenticationFlow")))
+                .map(e -> (String) e.get("displayName"))
+                .filter(name -> name != null && name.endsWith(" forms"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Could not locate the 'forms' sub-flow inside " + TEST_BROWSER_FLOW
+                                + ". Expected exactly one execution with authenticationFlow=true "
+                                + "and displayName ending in ' forms' (per Keycloak's copyFlow "
+                                + "naming convention: '<newName> <originalSubFlowAlias>'). "
+                                + "If this fails, Keycloak's flow representation or the default "
+                                + "browser flow shape has changed and this test needs an update. "
+                                + "Full executions response: " + executionsBeforeAdd));
+
+        // Step 3 — add the plugin execution INSIDE the forms sub-flow, not at
+        // the top level. Wrong placement (top level) makes Keycloak ignore the
+        // ALTERNATIVE branches (auth-cookie, IdP redirector, forms) and the
+        // user can never actually authenticate.
         given()
                 .header("Authorization", "Bearer " + adminToken)
                 .contentType(ContentType.JSON)
                 .body(Map.of("provider", PROVIDER_ID))
                 .when()
                 .post("/admin/realms/" + TEST_REALM
-                        + "/authentication/flows/" + TEST_BROWSER_FLOW
+                        + "/authentication/flows/" + formsSubFlowAlias
                         + "/executions/execution")
                 .then()
                 .statusCode(201);
 
+        // Step 4 — locate the newly-added execution. The recursive listing on
+        // the top-level flow includes nested executions, so we still GET on
+        // TEST_BROWSER_FLOW. We filter by providerId AND a non-zero level to
+        // be defensive (the new execution must be nested, not at top level).
         List<Map<String, Object>> executions = given()
                 .header("Authorization", "Bearer " + adminToken)
                 .accept(ContentType.JSON)
@@ -393,8 +471,24 @@ class RememberMeAuthenticatorIT {
                 .filter(e -> PROVIDER_ID.equals(e.get("providerId")))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError(
-                        "remember-me-authenticator execution not found after adding it to flow "
-                                + TEST_BROWSER_FLOW + ". Executions returned: " + executions));
+                        "remember-me-authenticator execution not found after adding it to "
+                                + "sub-flow " + formsSubFlowAlias + ". Executions returned: "
+                                + executions));
+
+        // Safety check: the new execution must be NESTED (level >= 1). A
+        // level of 0 means we accidentally put it at the top of the browser
+        // flow, which is the exact misconfiguration we're guarding against.
+        Object levelValue = rememberMeExecution.get("level");
+        int level = levelValue instanceof Number ? ((Number) levelValue).intValue() : -1;
+        if (level < 1) {
+            throw new AssertionError(
+                    "remember-me-authenticator execution was added at level " + level
+                            + " (expected >= 1 i.e. nested inside the forms sub-flow). "
+                            + "Top-level REQUIRED placement breaks Keycloak's "
+                            + "DefaultAuthenticationFlow ('REQUIRED and ALTERNATIVE elements "
+                            + "at same level'). Sub-flow alias resolved to '"
+                            + formsSubFlowAlias + "'. Full executions: " + executions);
+        }
 
         // Mutate to REQUIRED and PUT back. Keycloak's update endpoint reads
         // 'requirement' as a String and parses with Requirement.valueOf().
