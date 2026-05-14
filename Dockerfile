@@ -38,11 +38,15 @@ RUN --mount=type=cache,target=/root/.m2 \
     mvn -B -ntp dependency:go-offline
 
 # Now bring in the actual sources and build the JAR. Tests are intentionally
-# skipped: upstream has none, and `kc.sh build` in stage 2 acts as a real
+# skipped -- both compilation AND execution -- via -Dmaven.test.skip=true.
+# (-DskipTests would still compile test sources, dragging in test-scope deps
+# like mockito-junit-jupiter for no benefit: test classes never end up in the
+# production JAR.) The real test pass happens in the CI integration-test job
+# outside Docker (`mvn verify`); `kc.sh build` in stage 2 acts as an extra
 # integration check (it refuses to register a malformed provider).
 COPY src/src/ ./src/
 RUN --mount=type=cache,target=/root/.m2 \
-    mvn -B -ntp -DskipTests package
+    mvn -B -ntp -Dmaven.test.skip=true package
 
 # Sanity-check the expected artifact name (pom.xml <finalName>) so a future
 # pom change that breaks this contract fails the Docker build loudly here
