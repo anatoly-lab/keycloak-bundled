@@ -447,6 +447,11 @@ jobs:
     env:
       IMAGE_REF_SHA: ${{ needs.build-and-push.outputs.image_ref_sha }}
       RELEASE_VERSION: ${{ needs.build-and-push.outputs.release_version }}
+      # Single source of truth for the human-readable release tag. Both the
+      # "Guard against tag overwrite" pre-check and the "Promote..." step
+      # below read this so we don't construct the ref string in two places
+      # (where they could silently drift).
+      TARGET_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.release_version }}
 
     steps:
       - name: Log in to GitHub Container Registry
@@ -466,6 +471,37 @@ jobs:
         # image drift.
         uses: docker/setup-buildx-action@v4
 
+      - name: Guard against tag overwrite
+        # GHCR does not enforce tag immutability natively -- a workflow rerun
+        # on a `v*` tag (or `git tag -f` + force-push) would silently re-point
+        # the human-readable tag at a different digest. That breaks the
+        # "released artifact never changes" invariant downstream consumers
+        # rely on. This step turns that footgun into a hard failure: if the
+        # target ref already resolves on the registry, abort before the
+        # promote step writes anything.
+        #
+        # `imagetools inspect` exits 0 when the tag exists (== overwrite
+        # attempted, must fail) and non-zero on 404 or any other error (==
+        # treat as "tag absent, safe to proceed", per the task spec). Note:
+        # this conflates 404 with transient registry errors, which is a
+        # known limitation -- a flaky inspect would let promotion proceed.
+        # The promote step's own server-side write will surface registry
+        # errors anyway, so the blast radius is small.
+        #
+        # `set -euo pipefail` would normally abort on the first non-zero
+        # exit, so the inspect is wrapped in `if !` to capture its status
+        # without tripping `errexit` -- this is the idiomatic guard pattern.
+        run: |
+          set -euo pipefail
+          echo "Checking whether ${TARGET_REF} already exists on the registry"
+          if docker buildx imagetools inspect "${TARGET_REF}" >/dev/null 2>&1; then
+            echo "::error::Refusing to overwrite existing image tag: ${TARGET_REF}"
+            echo "::error::Released image tags are treated as immutable. To re-release this version, delete the existing image tag manually via the GHCR package UI (and reconsider whether you actually want to re-point a released tag)."
+            echo "::error::If reproducibility matters, pin consumers to the immutable date+SHA tag (${IMAGE_REF_SHA}) instead of the human-readable semver tag."
+            exit 1
+          fi
+          echo "OK: ${TARGET_REF} does not yet exist; promotion may proceed."
+
       - name: Promote immutable SHA tag to release tag
         # `docker buildx imagetools create` is the right tool here:
         #   - It works on manifest lists (our image is multi-arch:
@@ -480,12 +516,8 @@ jobs:
         #     digest, not the tag.
         # Skopeo would also work but pulls in an extra apt install step
         # for no operational benefit on the GitHub-hosted runner.
-        env:
-          IMAGE_REF_SHA: ${{ env.IMAGE_REF_SHA }}
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
         run: |
           set -euo pipefail
-          TARGET_REF="${REGISTRY}/${IMAGE_NAME}:${RELEASE_VERSION}"
           echo "Promoting ${IMAGE_REF_SHA} -> ${TARGET_REF}"
           docker buildx imagetools create \
             --tag "${TARGET_REF}" \
