@@ -99,6 +99,10 @@ class RememberMeAuthenticatorIT {
     private static final GenericContainer<?> KEYCLOAK = new GenericContainer<>(IMAGE_REF)
             .withEnv("KC_BOOTSTRAP_ADMIN_USERNAME", ADMIN_USER)
             .withEnv("KC_BOOTSTRAP_ADMIN_PASSWORD", ADMIN_PASSWORD)
+            // KC_HEALTH_ENABLED is required for Keycloak 25+ to expose /health/ready
+            // on the management port (9000). Without it the wait strategy below
+            // hits a closed port and times out. The CI smoke job sets the same.
+            .withEnv("KC_HEALTH_ENABLED", "true")
             .withEnv("KEYCLOAK_FRONTEND_URL", "http://localhost:8080")
             // start-dev avoids the full DB requirement; sufficient for behavioural tests.
             .withCommand("start-dev")
