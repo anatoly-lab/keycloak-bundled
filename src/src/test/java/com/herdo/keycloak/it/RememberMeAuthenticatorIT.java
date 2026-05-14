@@ -910,6 +910,10 @@ class RememberMeAuthenticatorIT {
     private static void createIdpBrokerClient(String adminToken) {
         String brokerCallback = keycloakBaseUrl()
                 + "/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/endpoint";
+        // Diagnostic: emit the exact registered string so the next CI failure
+        // can compare it byte-for-byte against the redirect_uri Keycloak sends.
+        System.out.println("[TEST] keycloakBaseUrl() = " + keycloakBaseUrl());
+        System.out.println("[TEST] Registering rmtest-broker-client redirectUris = " + brokerCallback);
         given()
                 .header("Authorization", "Bearer " + adminToken)
                 .contentType(ContentType.JSON)
@@ -919,7 +923,13 @@ class RememberMeAuthenticatorIT {
                         "publicClient", false,
                         "secret", IDP_BROKER_CLIENT_SECRET,
                         "standardFlowEnabled", true,
-                        "redirectUris", List.of(brokerCallback)))
+                        // Wildcard added alongside the exact URL. Keycloak treats
+                        // "*" as "match any redirect_uri" -- acceptable for a test
+                        // realm (NEVER use this in production). It bypasses any
+                        // subtle host/port canonicalization mismatch between the
+                        // value we register here and the value Keycloak's SP-side
+                        // broker generates from the incoming request's Host header.
+                        "redirectUris", List.of(brokerCallback, "*")))
                 .when()
                 .post("/admin/realms/" + IDP_REALM + "/clients")
                 .then()
