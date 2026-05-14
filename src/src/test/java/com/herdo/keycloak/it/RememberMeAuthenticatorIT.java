@@ -317,10 +317,17 @@ class RememberMeAuthenticatorIT {
         given()
                 .header("Authorization", "Bearer " + adminToken)
                 .contentType(ContentType.JSON)
+                // Keycloak's default realm has VERIFY_PROFILE as a required
+                // action; it intercepts the login flow with a profile-completion
+                // page if email/firstName/lastName are missing. Supplying them
+                // up-front lets the login proceed straight to the redirect.
                 .body(Map.of(
                         "username", TEST_USER,
                         "enabled", true,
                         "emailVerified", true,
+                        "email", TEST_USER + "@example.invalid",
+                        "firstName", "Test",
+                        "lastName", "User",
                         "credentials", List.of(Map.of(
                                 "type", "password",
                                 "value", TEST_PASSWORD,
