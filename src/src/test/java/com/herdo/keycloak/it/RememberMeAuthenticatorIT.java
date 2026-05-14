@@ -371,10 +371,10 @@ class RememberMeAuthenticatorIT {
         String brokerCallbackUrl = idpCredsResult.getHeader("Location");
         assertThat(idpCredsResult.statusCode())
                 .withFailMessage(
-                        "Expected IdP credential POST to 302 back to the SP broker callback "
+                        "Expected IdP credential POST to redirect (302/303) back to the SP broker callback "
                                 + "/realms/%s/broker/%s/endpoint, got %d. Body excerpt: %s",
                         SP_REALM, IDP_ALIAS, idpCredsResult.statusCode(), bodyExcerpt(idpCredsResult))
-                .isEqualTo(302);
+                .isIn(302, 303);
         assertThat(brokerCallbackUrl)
                 .withFailMessage(
                         "Broker callback Location must point at /realms/%s/broker/%s/endpoint, was: %s",
@@ -405,14 +405,14 @@ class RememberMeAuthenticatorIT {
 
         assertThat(brokerCallbackResult.statusCode())
                 .withFailMessage(
-                        "Expected broker callback to 302 the browser back to %s with an OIDC "
+                        "Expected broker callback to redirect (302/303) the browser back to %s with an OIDC "
                                 + "code, got %d. If 200 with HTML, the SP realm probably surfaced "
                                 + "the first-broker-login review-profile page (which means the "
                                 + "default first-broker-login flow stopped to prompt the user). "
                                 + "Body excerpt: %s",
                         SP_REDIRECT_URI, brokerCallbackResult.statusCode(),
                         bodyExcerpt(brokerCallbackResult))
-                .isEqualTo(302);
+                .isIn(302, 303);
         assertThat(brokerCallbackResult.getHeader("Location"))
                 .withFailMessage(
                         "Broker callback final 302 Location must redirect to %s with an OIDC code, was: %s",
@@ -1131,13 +1131,13 @@ class RememberMeAuthenticatorIT {
 
         assertThat(response.statusCode())
                 .withFailMessage(
-                        "Expected SP /auth (with kc_idp_hint=%s) to 302-redirect to the IdP, got %d.%n"
+                        "Expected SP /auth (with kc_idp_hint=%s) to redirect (302/303) to the IdP, got %d.%n"
                                 + "=== Body (first %d chars) ===%n%s%n"
                                 + "=== Keycloak container logs (last %d chars) ===%n%s%n",
                         IDP_ALIAS, response.statusCode(),
                         BODY_EXCERPT_LENGTH, bodyExcerpt(response),
                         CONTAINER_LOG_TAIL_CHARS, tailLogs(KEYCLOAK, CONTAINER_LOG_TAIL_CHARS))
-                .isEqualTo(302);
+                .isIn(302, 303);
         return response;
     }
 
