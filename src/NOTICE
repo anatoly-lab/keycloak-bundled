@@ -14,8 +14,9 @@ Why vendored
 The upstream repo's prebuilt 1.0.0 JAR release (2023) is compiled against
 Keycloak 20.x and ships with a pom.xml that pins stale dependency versions
 (see upstream issue #9). Rather than consuming the published JAR, we rebuild
-from source against the Keycloak release deployed by anki-mcp-infrastructure
-so the plugin's classpath is binary-compatible with the running server.
+from source against the Keycloak release this image targets (controlled by
+the `KC_VERSION` build arg) so the plugin's classpath is binary-compatible
+with the running server.
 
 Local modifications vs upstream
 -------------------------------

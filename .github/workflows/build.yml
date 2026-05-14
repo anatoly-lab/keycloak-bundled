@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       kc_version:
-        description: 'Keycloak version (must match anki-mcp-infrastructure operator version)'
+        description: 'Keycloak version (must match the Keycloak Operator version deployed by the consuming Kubernetes manifest)'
         required: false
         default: '26.5.7'
       plugin_git_sha:

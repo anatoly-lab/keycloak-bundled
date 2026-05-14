@@ -9,9 +9,10 @@
 #   3. runtime  -- fresh Keycloak base + the augmented /opt/keycloak/ tree.
 
 # ---- Build args -------------------------------------------------------------
-# KC_VERSION must match the Keycloak Operator deployment in anki-mcp-infrastructure
-# (CLAUDE.md: "this repo should track the same Keycloak version"). Bump both
-# repos in lockstep.
+# KC_VERSION must match the Keycloak Operator version deployed by the consuming
+# Kubernetes manifest. Bump this repo and the consuming deployment in lockstep
+# (see CLAUDE.md: "Example consumer: AnkiMCP" for one concrete instance of this
+# coordination rule).
 ARG KC_VERSION=26.5.7
 # Upstream plugin commit (Herdo/keycloak-remember-me-authenticator). Surfaced
 # as an OCI label so a deployed image can be traced back to its source revision.
@@ -92,7 +93,7 @@ ARG IMAGE_SOURCE=https://github.com/REPLACE-ME/keycloak-bundled
 COPY --from=kcbuild /opt/keycloak/ /opt/keycloak/
 
 # OCI image labels -- consumed by GHCR, registry UIs, and `docker inspect`.
-LABEL org.opencontainers.image.title="anki-mcp-keycloak" \
+LABEL org.opencontainers.image.title="keycloak-bundled" \
       org.opencontainers.image.description="Keycloak ${KC_VERSION} with Herdo's remember-me SPI authenticator baked in." \
       org.opencontainers.image.source="${IMAGE_SOURCE}" \
       org.opencontainers.image.licenses="MIT" \

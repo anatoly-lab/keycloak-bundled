@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Custom Keycloak server image build for the AnkiMCP platform. Wraps the official Keycloak image with a vendored copy of the [keycloak-remember-me-authenticator](https://github.com/Herdo/keycloak-remember-me-authenticator) SPI plugin so that **every** authentication (direct username/password AND social login via Google/GitHub) produces a persistent SSO cookie. No checkbox interaction required from the user.
+Custom Keycloak image build that bundles a vendored copy of the [keycloak-remember-me-authenticator](https://github.com/Herdo/keycloak-remember-me-authenticator) SPI plugin so that **every** authentication (direct username/password AND social login via Google/GitHub/any external IdP) produces a persistent SSO cookie. No checkbox interaction required from the user.
 
 **Sole output of this repo:** an OCI image pushed to GHCR (GitHub Container Registry).
 
 **Image tag pattern:** `ghcr.io/<owner>/keycloak-bundled:<keycloak-version>-<YYYY.MM.DD>-<sha7>` (immutable) plus `<keycloak-version>-<YYYY.MM.DD>` (floating per-day) plus `:latest`.
 
-**Consumed by:** `anki-mcp-infrastructure` → `apps/keycloak/templates/keycloak.yaml` (`spec.image` on the Keycloak CR).
+**Consumed by:** a Kubernetes deployment that runs Keycloak via the Keycloak Operator and sets `spec.image` on the Keycloak CR to a tag of this image. See "Example consumer: AnkiMCP" below for one concrete deployment.
 
 ## Why this repo exists
 
@@ -33,7 +33,7 @@ This pattern is **officially endorsed by Keycloak's lead maintainer (Stian Thorg
 ## Target repo structure
 
 ```
-anki-mcp-keycloak/
+keycloak-bundled/
   CLAUDE.md                # this file
   README.md                # public-facing (or internal) project description
   Dockerfile               # multi-stage: maven build → kc.sh build → runtime
@@ -51,7 +51,7 @@ anki-mcp-keycloak/
 The work to land this image:
 
 1. **Vendor the plugin source** under `src/`. Clone Herdo's repo and copy the Java files, then:
-   - Update `pom.xml` to target the current Keycloak BOM (currently 26.5.7; see "Coordinated infra repo" below).
+   - Update `pom.xml` to target the current Keycloak BOM (currently 26.5.7; see "Example consumer: AnkiMCP" below for the rationale behind this specific pin).
    - Strip stale dependencies (upstream pom.xml issue #9).
    - Confirm it builds cleanly with Maven 3.9+.
    - Preserve the MIT license header and add a NOTICE/README crediting Herdo.
@@ -74,14 +74,16 @@ The work to land this image:
    - That no secrets live in this repo (GHCR uses the workflow's auto-provisioned token — no per-repo secret to manage).
    - Build/run instructions for local dev.
 
-5. **Downstream coordination with `anki-mcp-infrastructure`** (separate repo, separate PR/commit there):
-   - Edit `apps/keycloak/templates/keycloak.yaml` → set `spec.image: ghcr.io/<owner>/keycloak-bundled:<tag>` on the Keycloak CR.
-   - Edit `apps/keycloak/realm-ankimcp.json`:
+5. **Downstream coordination with the consuming Kubernetes deployment** (separate repo, separate PR/commit there):
+   - Edit the Keycloak CR manifest → set `spec.image: ghcr.io/<owner>/keycloak-bundled:<tag>` on the Keycloak CR.
+   - Edit the realm JSON (or whatever the consuming project uses to define realm configuration):
      - Flip `rememberMe: true` at realm level. **REQUIRED in K26.4.1+** or sessions get invalidated — see [keycloak#43328](https://github.com/keycloak/keycloak/issues/43328). The plugin alone is NOT enough; the realm flag must also be on.
      - Add a new authenticator execution to the Browser flow (post-authentication) that invokes the `remember-me` provider.
      - Add the same to the Post Broker Login flow (so social-login users get the same treatment).
-     - Confirm/adjust `ssoSessionMaxLifespanRememberMe` and `ssoSessionIdleTimeoutRememberMe` to target persistence (currently 30 days for both; consider 90 days for `MaxLifespan` if you want longer-lived sessions).
-   - The `keycloak-config-cli` PostSync hook will reconcile these realm changes on the next ArgoCD sync.
+     - Confirm/adjust `ssoSessionMaxLifespanRememberMe` and `ssoSessionIdleTimeoutRememberMe` to target persistence (a common starting point is 30 days for both; consider 90 days for `MaxLifespan` if you want longer-lived sessions).
+   - If the consuming project uses `keycloak-config-cli` (or similar), its reconciliation hook will apply these realm changes on the next sync.
+
+   See "Example consumer: AnkiMCP" below for the concrete shape this took for one specific deployment.
 
 ## Open decisions (resolve before pushing to GitHub)
 
@@ -89,13 +91,17 @@ The work to land this image:
 - **Exact image tag scheme — RESOLVED.** Locked-in scheme: `<KC_VERSION>-<YYYY.MM.DD>-<sha7>` (immutable, one per build, suitable for pinning) plus `<KC_VERSION>-<YYYY.MM.DD>` (floating per-day) plus `latest`. CI pushes all three on every build.
 - **Plugin maintenance strategy.** Vendoring (current plan) means manual rebuild against new Keycloak BOMs on each version bump. Tracking upstream JAR releases is more fragile (Herdo may not release timely). Vendoring is recommended.
 
-## Coordinated infra repo
+## Example consumer: AnkiMCP
 
-The infrastructure repo `anki-mcp-infrastructure` deploys Keycloak via the Keycloak Operator and reconciles realm configuration via a `keycloak-config-cli` PostSync hook. After this image build lands and is pushed to GHCR, the infra repo's Keycloak `image` field (set to `ghcr.io/<owner>/keycloak-bundled:<tag>`) plus realm JSON need the updates listed in "Pending work" item #5 above.
+This image was originally built for the AnkiMCP platform and is consumed there today. The notes below capture that specific deployment as a worked example — they are not requirements of this repo, and any other Keycloak-Operator-based deployment can consume the image the same way.
 
-**Keycloak version currently deployed:** `26.5.7`. This is held intentionally — `adorsys/keycloak-config-cli` has no `6.5.0-26.6.x` build yet, so the operator can't be bumped to 26.6+ until adorsys ships a compatible config-cli image. This repo should track the same Keycloak version.
+**Downstream repo:** `anki-mcp-infrastructure` → `apps/keycloak/templates/keycloak.yaml` sets the Keycloak CR's `spec.image` to a tag of this image. Realm configuration lives in `apps/keycloak/realm-ankimcp.json` and is reconciled by a `keycloak-config-cli` PostSync hook driven by ArgoCD.
 
-**Version-bump coordination rule:** when Keycloak gets bumped in `anki-mcp-infrastructure` (Keycloak Operator bump → bundled server image bump), this image MUST be rebuilt against the new Keycloak version in lockstep. Otherwise the Keycloak StatefulSet (running new version) will fall out of sync with this custom image (containing the extension built against the old version). Recommended workflow: bump Keycloak here first, push the new image, then bump the operator in the infra repo.
+**Keycloak version currently deployed there:** `26.5.7`. This is held intentionally — `adorsys/keycloak-config-cli` has no `6.5.0-26.6.x` build yet, so the operator can't be bumped to 26.6+ until adorsys ships a compatible config-cli image. This repo tracks the same Keycloak version that consumer deploys.
+
+**Version-bump coordination rule (for this consumer):** when Keycloak gets bumped in `anki-mcp-infrastructure` (Keycloak Operator bump → bundled server image bump), this image MUST be rebuilt against the new Keycloak version in lockstep. Otherwise the Keycloak StatefulSet (running new version) will fall out of sync with this custom image (containing the extension built against the old version). Recommended workflow: bump Keycloak here first, push the new image, then bump the operator in the infra repo. Other consumers should follow the same lockstep pattern against their own Operator version.
+
+**Local sibling path (user-specific):** `/Users/anatoly/Developer/projects/ankimcp/anki-mcp-infrastructure`.
 
 ## References
 
@@ -104,4 +110,3 @@ The infrastructure repo `anki-mcp-infrastructure` deploys Keycloak via the Keycl
 - Keycloak server configuration provider docs: https://www.keycloak.org/server/configuration-provider
 - Upstream `wontfix` issue endorsing this plugin pattern: https://github.com/keycloak/keycloak/issues/37372
 - K26.4.1+ rememberMe behavior change: https://github.com/keycloak/keycloak/issues/43328
-- Existing infra repo: `/Users/anatoly/Developer/projects/ankimcp/anki-mcp-infrastructure` (sibling repo via local path)

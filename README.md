@@ -1,4 +1,4 @@
-# anki-mcp-keycloak
+# keycloak-bundled
 
 Custom Keycloak OCI image that bundles Herdo's `remember-me` SPI authenticator so every authentication path produces a persistent SSO cookie.
 
@@ -30,7 +30,7 @@ docker build \
   --build-arg VCS_REF=$(git rev-parse HEAD) \
   --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --build-arg IMAGE_SOURCE=https://github.com/<owner>/keycloak-bundled \
-  -t anki-mcp-keycloak:dev \
+  -t keycloak-bundled:dev \
   .
 ```
 
@@ -38,7 +38,7 @@ Build args (all declared in the `Dockerfile`):
 
 | Arg | Default | Purpose |
 | --- | --- | --- |
-| `KC_VERSION` | `26.5.7` | Keycloak base image tag. Must match the Operator version in `anki-mcp-infrastructure`. |
+| `KC_VERSION` | `26.5.7` | Keycloak base image tag. Must match the Keycloak Operator version deployed by the consuming Kubernetes manifest. |
 | `PLUGIN_GIT_SHA` | `de35b36` | Upstream Herdo commit, surfaced as an OCI label for traceability. |
 | `VCS_REF` | `local` | Git SHA of this repo. CI sets it; local builds may leave the default. |
 | `BUILD_DATE` | `unknown` | RFC3339 timestamp. CI sets it. |
@@ -50,7 +50,7 @@ Build args (all declared in the `Dockerfile`):
 docker run --rm -p 8080:8080 \
   -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
   -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
-  anki-mcp-keycloak:dev \
+  keycloak-bundled:dev \
   start-dev
 ```
 
@@ -70,10 +70,10 @@ GHCR push uses the workflow's auto-provisioned `${{ secrets.GITHUB_TOKEN }}` plu
 
 ## Downstream coordination
 
-The image is consumed by the sibling `anki-mcp-infrastructure` repo at `apps/keycloak/templates/keycloak.yaml` (the Keycloak CR's `spec.image`, which must be set to `ghcr.io/<owner>/keycloak-bundled:<tag>`). Two things must stay in lockstep:
+The image is intended to be consumed by a Kubernetes deployment that runs Keycloak via the Keycloak Operator and points the Keycloak CR's `spec.image` at `ghcr.io/<owner>/keycloak-bundled:<tag>`. Two things must stay in lockstep between this repo and the consuming project:
 
-- **Keycloak version.** When the Keycloak Operator is bumped in `anki-mcp-infrastructure`, `KC_VERSION` here must be bumped in the same release window so the StatefulSet and the bundled extension share an ABI. Recommended order: bump and publish here first, then bump the Operator downstream.
-- **Realm-level `rememberMe`.** Starting with Keycloak 26.4.1, the authenticator alone is insufficient — the realm must also have `rememberMe: true`, otherwise sessions get invalidated. See [keycloak#43328](https://github.com/keycloak/keycloak/issues/43328). The flag and the two flow executions (Browser post-auth, Post Broker Login) are managed in the infra repo's realm JSON and reconciled by `keycloak-config-cli`.
+- **Keycloak version.** When the Keycloak Operator is bumped in the consuming deployment, `KC_VERSION` here must be bumped in the same release window so the StatefulSet and the bundled extension share an ABI. Recommended order: bump and publish here first, then bump the Operator downstream. (For instance, the original consumer is `anki-mcp-infrastructure`, which tracks the same Keycloak version this repo builds against.)
+- **Realm-level `rememberMe`.** Starting with Keycloak 26.4.1, the authenticator alone is insufficient — the realm must also have `rememberMe: true`, otherwise sessions get invalidated. See [keycloak#43328](https://github.com/keycloak/keycloak/issues/43328). The flag and the two flow executions (Browser post-auth, Post Broker Login) are managed in the consuming project's realm configuration (typically a realm JSON reconciled by `keycloak-config-cli`).
 
 ## Plugin attribution
 
