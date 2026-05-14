@@ -63,7 +63,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Lint Dockerfile (hadolint)
-        uses: hadolint/hadolint-action@v3
+        # Pinned to a specific patch -- hadolint-action doesn't publish a
+        # floating `v3` tag (verified against the GitHub Releases API).
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: ./Dockerfile
 
@@ -71,7 +73,9 @@ jobs:
         # raven-actions/actionlint is the conventional wrapper around rhysd's
         # actionlint CLI. The rhysd/actionlint repo itself is a Go CLI with no
         # action.yml, so a wrapper is required if we want `uses:` semantics.
-        uses: raven-actions/actionlint@v2
+        # Pinned to a specific patch -- raven-actions/actionlint doesn't
+        # publish a floating `v2` tag either.
+        uses: raven-actions/actionlint@v2.1.2
 
       - name: Compute build metadata
         id: meta
