@@ -13,6 +13,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -25,17 +26,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  * End-to-end integration tests for the bundled Keycloak image
  * ({@code ghcr.io/anatoly314/keycloak-bundled}).
  *
- * Two assertions:
+ * Three assertions:
  *   1. {@link #keycloakBasicFunctionalityIntact()} — the augmented image still
  *      exposes Keycloak's standard OIDC surface (proves we have not broken the
  *      vanilla server while vendoring the SPI).
  *   2. {@link #pluginSetsMaxAgeOnIdentityCookieAfterLogin()} — the literal bug
- *      this whole repo fixes: after a browser-flow login in a realm with
- *      {@code rememberMe: true} AND the remember-me-authenticator wired into
- *      the browser flow, the {@code KEYCLOAK_IDENTITY} cookie returned to the
- *      browser is a persistent cookie (has a {@code Max-Age} attribute set to
+ *      this whole repo fixes on the direct-login path: after a browser-flow
+ *      login in a realm with {@code rememberMe: true} AND the
+ *      remember-me-authenticator wired into the browser flow, the
+ *      {@code KEYCLOAK_IDENTITY} cookie returned to the browser is a
+ *      persistent cookie (has a {@code Max-Age} attribute set to
  *      {@code ssoSessionMaxLifespanRememberMe}) rather than a session-only
  *      cookie.
+ *   3. {@link #pluginSetsMaxAgeOnIdentityCookieAfterIdpLogin()} — same bug,
+ *      same assertion, but on the external-IdP / social-login path (the
+ *      reason this plugin exists in the first place). Uses a second realm in
+ *      the SAME container as a stand-in IdP; the remember-me-authenticator is
+ *      wired into a post-broker-login flow per the pattern endorsed by
+ *      Keycloak's lead maintainer in keycloak#37372.
  *
  * The image under test is supplied via the Maven system property
  * {@code image.ref}, whose value is a complete image reference
@@ -68,6 +76,50 @@ class RememberMeAuthenticatorIT {
     private static final String TEST_PASSWORD = "test-password";
     private static final String TEST_REDIRECT_URI = "http://localhost/callback";
     private static final String TEST_BROWSER_FLOW = "rmtest-browser";
+
+    // ---- IdP-brokering test fixtures (Test 3) -----------------------------
+    //
+    // Two realms playing different roles in the same Keycloak container:
+    //   * IDP_REALM     — acts as the upstream OIDC IdP (Google/GitHub stand-in).
+    //                     Hosts the human user and a confidential client that
+    //                     the SP-side IdP config authenticates as.
+    //   * SP_REALM      — the consuming realm. Has an OIDC client (for the
+    //                     test driver to log in via), an Identity Provider
+    //                     pointing back at IDP_REALM, and the post-broker-login
+    //                     flow that wires in the remember-me-authenticator.
+    //
+    // The IdP redirects between the two realms happen via the same Keycloak
+    // base URL the test JVM uses, so the broker callback URL is reachable from
+    // both browser (= test JVM) and Keycloak's own broker code (= localhost
+    // inside the container). Keycloak's hostname-v2 dynamically resolves
+    // scheme/host/port from the incoming request when KC_HOSTNAME is unset
+    // (see GenericContainer setup above), so absolute URLs work in both
+    // directions.
+
+    private static final String IDP_REALM = "idp-realm";
+    private static final String IDP_USER = "idp-test-user";
+    private static final String IDP_USER_PASSWORD = "idp-test-password";
+    /**
+     * The confidential client inside {@link #IDP_REALM} that the SP-side IdP
+     * configuration authenticates as. The client secret is set explicitly so
+     * the SP-side {@code clientSecret} config field has a known value.
+     */
+    private static final String IDP_BROKER_CLIENT = "rmtest-broker-client";
+    private static final String IDP_BROKER_CLIENT_SECRET = "idp-broker-secret";
+
+    private static final String SP_REALM = "rmtest-idp";
+    private static final String SP_CLIENT = "rmtest-idp-client";
+    private static final String SP_REDIRECT_URI = "http://localhost/callback-idp";
+    /**
+     * Alias of the Identity Provider inside {@link #SP_REALM} that points at
+     * {@link #IDP_REALM}. This alias becomes part of the broker callback URL
+     * ({@code /realms/{SP_REALM}/broker/{IDP_ALIAS}/endpoint}, per
+     * {@code IdentityBrokerService} {@code @Path("{provider_alias}/endpoint")}
+     * in Keycloak 26.5.7), which is also the {@code redirectUris} entry on
+     * the IdP-realm-side broker client.
+     */
+    private static final String IDP_ALIAS = "idp-via-keycloak";
+    private static final String POST_BROKER_FLOW = "post-idp-login-remember-me";
 
     /**
      * 30 days in seconds. Chosen as a distinct, recognisable value to assert
@@ -249,6 +301,150 @@ class RememberMeAuthenticatorIT {
                                 + "which is the literal bug this plugin fixes — either the "
                                 + "remember-me execution is not wired into the browser flow, or "
                                 + "the realm's rememberMe flag is not true (required from "
+                                + "Keycloak 26.4.1+ per keycloak#43328).",
+                        REMEMBER_ME_MAX_AGE_SECONDS, maxAge)
+                .isBetween(lowerBound, upperBound);
+    }
+
+    // =======================================================================
+    //  Test 3 — plugin sets Max-Age on KEYCLOAK_IDENTITY after IdP login
+    // =======================================================================
+
+    /**
+     * Mirrors {@link #pluginSetsMaxAgeOnIdentityCookieAfterLogin()} but
+     * exercises the social-login / external-IdP code path — the literal
+     * reason this plugin exists. Per Keycloak 26.5.7 source review,
+     * {@code IdentityProviderAuthenticator.redirect()} short-circuits the
+     * Browser flow when an IdP is involved (the forms sub-flow never runs),
+     * and {@code AuthenticationProcessor.resetFlow()} wipes auth notes for
+     * first-time IdP users. The correct hook is therefore the Post-Broker-Login
+     * flow, called out as the supported pattern by Keycloak's lead maintainer
+     * in keycloak#37372 (closed wontfix, Nov 2025) and documented as
+     * "Post Login Flow" in Keycloak's identity-broker configuration guide.
+     *
+     * <p>Setup: the same Keycloak container hosts two realms — {@code idp-realm}
+     * stands in for an external IdP (Google/GitHub equivalent), and
+     * {@code rmtest-idp} stands in for the consuming SP and configures
+     * {@code idp-realm} as a generic OIDC Identity Provider, with the
+     * remember-me-authenticator wired into a post-broker-login flow bound to
+     * that IdP's {@code postBrokerLoginFlowAlias}.
+     *
+     * <p>Drive: 5 HTTP hops, each redirect chased manually to inspect
+     * intermediate state. The {@code KEYCLOAK_IDENTITY} cookie under test is
+     * set on the last hop (the broker callback's 302 back to the SP client's
+     * {@code redirect_uri}), which is where the assertion lives.
+     */
+    @Test
+    void pluginSetsMaxAgeOnIdentityCookieAfterIdpLogin() {
+        String adminToken = adminAccessToken();
+
+        // --- Upstream IdP (idp-realm) ----------------------------------
+        createIdpRealm(adminToken);
+        createIdpBrokerClient(adminToken);
+        createIdpUser(adminToken);
+
+        // --- Consuming SP (rmtest-idp) ---------------------------------
+        createSpRealm(adminToken);
+        createSpClient(adminToken);
+        createIdentityProviderPointingAtIdpRealm(adminToken);
+        createPostBrokerLoginFlowWithRememberMe(adminToken);
+        bindPostBrokerFlowToIdp(adminToken);
+
+        // --- Hop 1: SP /auth with kc_idp_hint -> 302 to IdP /auth ------
+        Response spAuthRedirect = beginIdpBrokeredLogin();
+        String idpAuthUrl = spAuthRedirect.getHeader("Location");
+        assertThat(idpAuthUrl)
+                .withFailMessage(
+                        "Expected SP /auth (with kc_idp_hint=%s) to 302 the browser to the "
+                                + "upstream IdP's /auth endpoint, got null Location. Status was %d. "
+                                + "Body excerpt: %s",
+                        IDP_ALIAS, spAuthRedirect.statusCode(), bodyExcerpt(spAuthRedirect))
+                .contains("/realms/" + IDP_REALM + "/protocol/openid-connect/auth");
+
+        // --- Hop 2: GET the IdP /auth -> 200 with login form -----------
+        Response idpLoginPage = followToIdpLoginPage(idpAuthUrl);
+        String idpFormAction = extractLoginFormAction(idpLoginPage);
+
+        // --- Hop 3: POST credentials to IdP -> 302 to broker callback --
+        Response idpCredsResult = submitCredentialsTo(
+                idpFormAction, idpLoginPage.getDetailedCookies(), IDP_USER, IDP_USER_PASSWORD);
+        String brokerCallbackUrl = idpCredsResult.getHeader("Location");
+        assertThat(idpCredsResult.statusCode())
+                .withFailMessage(
+                        "Expected IdP credential POST to 302 back to the SP broker callback "
+                                + "/realms/%s/broker/%s/endpoint, got %d. Body excerpt: %s",
+                        SP_REALM, IDP_ALIAS, idpCredsResult.statusCode(), bodyExcerpt(idpCredsResult))
+                .isEqualTo(302);
+        assertThat(brokerCallbackUrl)
+                .withFailMessage(
+                        "Broker callback Location must point at /realms/%s/broker/%s/endpoint, was: %s",
+                        SP_REALM, IDP_ALIAS, brokerCallbackUrl)
+                .contains("/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/endpoint");
+
+        // --- Hop 4: GET broker callback -> 302 to SP client redirect_uri.
+        //
+        // This is where Keycloak processes the IdP token, reconciles the user
+        // into SP_REALM (first-broker-login), runs the post-broker-login flow
+        // (where remember-me-authenticator fires and sets the auth-session
+        // remember_me note), and finally attaches the SSO cookie before
+        // emitting the 302. The KEYCLOAK_IDENTITY Set-Cookie therefore lives
+        // on the 302 response from THIS hop.
+        //
+        // Cookie scoping note: the SP realm's AUTH_SESSION_ID was set on
+        // Hop 1's 302 response (REST Assured preserves cookies across
+        // .cookies(...) handoff). We pass it forward explicitly. The
+        // IdP realm's AUTH_SESSION_ID is on a different cookie name? No —
+        // both realms set a cookie called AUTH_SESSION_ID, but only the
+        // SP-realm one applies to the SP-realm paths involved here. To
+        // avoid cross-realm cookie collisions (both cookies have host
+        // localhost, only realm path differs), pass JUST the cookies from
+        // the SP-realm side: AUTH_SESSION_ID from Hop 1 plus whatever
+        // KEYCLOAK_SESSION* etc were carried.
+        Response brokerCallbackResult = followBrokerCallback(
+                brokerCallbackUrl, spAuthRedirect.getDetailedCookies());
+
+        assertThat(brokerCallbackResult.statusCode())
+                .withFailMessage(
+                        "Expected broker callback to 302 the browser back to %s with an OIDC "
+                                + "code, got %d. If 200 with HTML, the SP realm probably surfaced "
+                                + "the first-broker-login review-profile page (which means the "
+                                + "default first-broker-login flow stopped to prompt the user). "
+                                + "Body excerpt: %s",
+                        SP_REDIRECT_URI, brokerCallbackResult.statusCode(),
+                        bodyExcerpt(brokerCallbackResult))
+                .isEqualTo(302);
+        assertThat(brokerCallbackResult.getHeader("Location"))
+                .withFailMessage(
+                        "Broker callback final 302 Location must redirect to %s with an OIDC code, was: %s",
+                        SP_REDIRECT_URI, brokerCallbackResult.getHeader("Location"))
+                .startsWith(SP_REDIRECT_URI)
+                .contains("code=")
+                .contains("state=idp-test-state");
+
+        // --- Cookie assertion: SAME assertion as the direct-login test --
+        Cookie identity = brokerCallbackResult.getDetailedCookies().get("KEYCLOAK_IDENTITY");
+        assertThat(identity)
+                .withFailMessage(
+                        "Broker callback's final 302 must Set-Cookie KEYCLOAK_IDENTITY on the SP realm. "
+                                + "Cookies actually set: %s. If absent, the post-broker-login flow "
+                                + "may not have reached attachSession() — check the container logs "
+                                + "for first-broker-login required-action prompts (review profile, "
+                                + "verify email, etc.).",
+                        brokerCallbackResult.getDetailedCookies())
+                .isNotNull();
+
+        long maxAge = identity.getMaxAge();
+        long lowerBound = REMEMBER_ME_MAX_AGE_SECONDS - MAX_AGE_TOLERANCE_SECONDS;
+        long upperBound = REMEMBER_ME_MAX_AGE_SECONDS;
+        assertThat(maxAge)
+                .withFailMessage(
+                        "After IdP-brokered login, KEYCLOAK_IDENTITY Max-Age must be ~%d s "
+                                + "(ssoSessionMaxLifespanRememberMe). Got %d. Max-Age == -1 means "
+                                + "the cookie is session-scoped, which is the IdP-path manifestation "
+                                + "of the bug this plugin fixes — either the post-broker-login flow "
+                                + "is not bound to the IdP (postBrokerLoginFlowAlias), the "
+                                + "remember-me-authenticator is not REQUIRED inside that flow, or "
+                                + "the SP realm's rememberMe flag is not true (required from "
                                 + "Keycloak 26.4.1+ per keycloak#43328).",
                         REMEMBER_ME_MAX_AGE_SECONDS, maxAge)
                 .isBetween(lowerBound, upperBound);
@@ -620,14 +816,396 @@ class RememberMeAuthenticatorIT {
     }
 
     private static Response submitCredentials(String formAction, Cookies sessionCookies) {
+        return submitCredentialsTo(formAction, sessionCookies, TEST_USER, TEST_PASSWORD);
+    }
+
+    /**
+     * Parameterised credential POST. Used by both the direct-login test
+     * (against {@link #TEST_USER}) and the IdP-brokered-login test (against
+     * the {@link #IDP_USER} living in {@link #IDP_REALM}). Same wire shape;
+     * REST Assured carries the form-page cookies forward.
+     */
+    private static Response submitCredentialsTo(
+            String formAction, Cookies sessionCookies, String username, String password) {
         return given()
                 .redirects().follow(false)
                 .cookies(sessionCookies)
                 .contentType(ContentType.URLENC)
-                .formParam("username", TEST_USER)
-                .formParam("password", TEST_PASSWORD)
+                .formParam("username", username)
+                .formParam("password", password)
                 .when()
                 .post(formAction);
+    }
+
+    // =======================================================================
+    //  Helpers — IdP-brokering setup (Test 3)
+    // =======================================================================
+
+    /**
+     * Base URL of the Keycloak container as seen from BOTH the test JVM and
+     * the container itself (because of Docker on macOS the container's
+     * outbound localhost loops back through the host network, so the same
+     * host:mappedPort string works from both directions when Keycloak makes
+     * its server-to-server broker token call). This URL is baked into the
+     * IdP-realm broker client's {@code redirectUris} and into the SP-realm
+     * IdP config's {@code authorizationUrl}/{@code tokenUrl}/etc — Keycloak
+     * has to be able to dial the URL it generates for the SP redirect AND
+     * the URLs in the IdP config; both pivot off this same string.
+     */
+    private static String keycloakBaseUrl() {
+        return "http://" + KEYCLOAK.getHost() + ":" + KEYCLOAK.getMappedPort(8080);
+    }
+
+    private static void createIdpRealm(String adminToken) {
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(Map.of("realm", IDP_REALM, "enabled", true))
+                .when()
+                .post("/admin/realms")
+                .then()
+                .statusCode(201);
+    }
+
+    /**
+     * Creates the confidential client inside {@link #IDP_REALM} that the
+     * SP-realm IdP configuration will authenticate as during the Authorization
+     * Code Flow (Hop 3 -> Hop 4 in the test). The {@code redirectUris} entry
+     * is the broker callback URL on the SP side, per
+     * {@code IdentityBrokerService#getEndpoint} ({@code @Path("{provider_alias}/endpoint")})
+     * in Keycloak 26.5.7 — i.e. {@code /realms/{SP_REALM}/broker/{IDP_ALIAS}/endpoint}.
+     */
+    private static void createIdpBrokerClient(String adminToken) {
+        String brokerCallback = keycloakBaseUrl()
+                + "/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/endpoint";
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(Map.of(
+                        "clientId", IDP_BROKER_CLIENT,
+                        "enabled", true,
+                        "publicClient", false,
+                        "secret", IDP_BROKER_CLIENT_SECRET,
+                        "standardFlowEnabled", true,
+                        "redirectUris", List.of(brokerCallback)))
+                .when()
+                .post("/admin/realms/" + IDP_REALM + "/clients")
+                .then()
+                .statusCode(201);
+    }
+
+    private static void createIdpUser(String adminToken) {
+        // Same VERIFY_PROFILE-avoidance shape as createUser() — populate
+        // email/firstName/lastName so the IdP-side login form doesn't get
+        // intercepted by the realm's default required action.
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(Map.of(
+                        "username", IDP_USER,
+                        "enabled", true,
+                        "emailVerified", true,
+                        "email", IDP_USER + "@example.invalid",
+                        "firstName", "Idp",
+                        "lastName", "User",
+                        "credentials", List.of(Map.of(
+                                "type", "password",
+                                "value", IDP_USER_PASSWORD,
+                                "temporary", false))))
+                .when()
+                .post("/admin/realms/" + IDP_REALM + "/users")
+                .then()
+                .statusCode(201);
+    }
+
+    private static void createSpRealm(String adminToken) {
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                // Same rememberMe + lifespan flags as TEST_REALM — required
+                // by keycloak#43328 to land Max-Age on the cookie even when
+                // the plugin sets the auth-session note.
+                .body(Map.of(
+                        "realm", SP_REALM,
+                        "enabled", true,
+                        "rememberMe", true,
+                        "ssoSessionMaxLifespanRememberMe", REMEMBER_ME_MAX_AGE_SECONDS,
+                        "ssoSessionIdleTimeoutRememberMe", REMEMBER_ME_MAX_AGE_SECONDS))
+                .when()
+                .post("/admin/realms")
+                .then()
+                .statusCode(201);
+    }
+
+    private static void createSpClient(String adminToken) {
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(Map.of(
+                        "clientId", SP_CLIENT,
+                        "enabled", true,
+                        "publicClient", true,
+                        "standardFlowEnabled", true,
+                        "redirectUris", List.of(SP_REDIRECT_URI)))
+                .when()
+                .post("/admin/realms/" + SP_REALM + "/clients")
+                .then()
+                .statusCode(201);
+    }
+
+    /**
+     * Creates an OIDC-providerId Identity Provider in {@link #SP_REALM} that
+     * brokers to {@link #IDP_REALM}. The config keys below are the exact
+     * camelCase strings consumed by {@code OAuth2IdentityProviderConfig}
+     * ({@code authorizationUrl}, {@code tokenUrl}, {@code userInfoUrl},
+     * {@code clientId}, {@code clientSecret}, {@code defaultScope}) and
+     * {@code OIDCIdentityProviderConfig} ({@code jwksUrl}, {@code useJwksUrl},
+     * {@code logoutUrl}) in Keycloak 26.5.7. {@code useJwksUrl=true} +
+     * {@code jwksUrl} lets the SP fetch the IdP realm's signing keys at
+     * runtime rather than requiring them inline.
+     */
+    private static void createIdentityProviderPointingAtIdpRealm(String adminToken) {
+        String idpBase = keycloakBaseUrl() + "/realms/" + IDP_REALM + "/protocol/openid-connect";
+        Map<String, String> config = new HashMap<>();
+        config.put("clientId", IDP_BROKER_CLIENT);
+        config.put("clientSecret", IDP_BROKER_CLIENT_SECRET);
+        config.put("authorizationUrl", idpBase + "/auth");
+        config.put("tokenUrl", idpBase + "/token");
+        config.put("userInfoUrl", idpBase + "/userinfo");
+        config.put("jwksUrl", idpBase + "/certs");
+        config.put("logoutUrl", idpBase + "/logout");
+        config.put("useJwksUrl", "true");
+        config.put("validateSignature", "true");
+        config.put("defaultScope", "openid");
+        // Trust email from the upstream IdP so first-broker-login doesn't
+        // halt on a "verify email" required action. Without this, Keycloak's
+        // built-in first-broker-login flow inserts a verification step and
+        // the test's broker-callback hop returns 200 (HTML) instead of 302.
+        config.put("trustEmail", "true");
+
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(Map.of(
+                        "alias", IDP_ALIAS,
+                        "providerId", "oidc",
+                        "enabled", true,
+                        "trustEmail", true,
+                        "config", config))
+                .when()
+                .post("/admin/realms/" + SP_REALM + "/identity-provider/instances")
+                .then()
+                .statusCode(201);
+    }
+
+    /**
+     * Creates the dedicated post-broker-login flow in {@link #SP_REALM} and
+     * wires the remember-me-authenticator into it as a single REQUIRED
+     * execution. Same shape as
+     * {@link #wireRememberMeIntoBrowserFlow(String)}'s execution-add step,
+     * but we don't need the sub-flow gymnastics here — a brand-new top-level
+     * flow has no built-in branches to collide with, so REQUIRED at the top
+     * level is fine.
+     *
+     * <p>Keycloak's flow-create API expects {@code providerId: "basic-flow"}
+     * for a regular (non-client-auth) authentication flow; confirmed against
+     * {@code AuthenticationManagementResource#createFlow} in 26.5.7. The
+     * follow-up execution-add uses the same {@code {"provider": "..."}}
+     * body shape as the browser-flow case, and the requirement defaults to
+     * {@code DISABLED} (the factory exposes >1 requirement choice), so we
+     * flip it to REQUIRED via the same PUT round-trip pattern.
+     */
+    private static void createPostBrokerLoginFlowWithRememberMe(String adminToken) {
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(Map.of(
+                        "alias", POST_BROKER_FLOW,
+                        "providerId", "basic-flow",
+                        "topLevel", true,
+                        "builtIn", false))
+                .when()
+                .post("/admin/realms/" + SP_REALM + "/authentication/flows")
+                .then()
+                .statusCode(201);
+
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(Map.of("provider", PROVIDER_ID))
+                .when()
+                .post("/admin/realms/" + SP_REALM
+                        + "/authentication/flows/" + POST_BROKER_FLOW + "/executions/execution")
+                .then()
+                .statusCode(201);
+
+        List<Map<String, Object>> executions = given()
+                .header("Authorization", "Bearer " + adminToken)
+                .accept(ContentType.JSON)
+                .when()
+                .get("/admin/realms/" + SP_REALM
+                        + "/authentication/flows/" + POST_BROKER_FLOW + "/executions")
+                .then()
+                .statusCode(200)
+                .extract()
+                .jsonPath()
+                .getList("$");
+
+        Map<String, Object> rememberMeExecution = executions.stream()
+                .filter(e -> PROVIDER_ID.equals(e.get("providerId")))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "remember-me-authenticator execution not found in " + POST_BROKER_FLOW
+                                + " after adding it. Executions returned: " + executions));
+
+        rememberMeExecution.put("requirement", "REQUIRED");
+
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(rememberMeExecution)
+                .when()
+                .put("/admin/realms/" + SP_REALM
+                        + "/authentication/flows/" + POST_BROKER_FLOW + "/executions")
+                .then()
+                .statusCode(204);
+    }
+
+    /**
+     * Round-trips the IdP representation and sets {@code postBrokerLoginFlowAlias}
+     * to the flow we just built. Partial PUT is unsafe here (same reason as
+     * the realm-rep PUT in {@link #wireRememberMeIntoBrowserFlow(String)} —
+     * fields missing from the body get nulled in the persisted rep), so we
+     * GET, mutate, PUT.
+     */
+    private static void bindPostBrokerFlowToIdp(String adminToken) {
+        Map<String, Object> idpRep = given()
+                .header("Authorization", "Bearer " + adminToken)
+                .accept(ContentType.JSON)
+                .when()
+                .get("/admin/realms/" + SP_REALM + "/identity-provider/instances/" + IDP_ALIAS)
+                .then()
+                .statusCode(200)
+                .extract()
+                .jsonPath()
+                .getMap("$");
+
+        idpRep.put("postBrokerLoginFlowAlias", POST_BROKER_FLOW);
+
+        given()
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(ContentType.JSON)
+                .body(idpRep)
+                .when()
+                .put("/admin/realms/" + SP_REALM + "/identity-provider/instances/" + IDP_ALIAS)
+                .then()
+                .statusCode(204);
+    }
+
+    // =======================================================================
+    //  Helpers — IdP-brokered browser-flow login simulation (Test 3)
+    // =======================================================================
+
+    /**
+     * Hop 1 of the IdP-brokered login. GETs the SP realm's /auth endpoint
+     * with {@code kc_idp_hint=IDP_ALIAS} so Keycloak's identity-provider
+     * redirector triggers IMMEDIATELY without rendering the SP login form
+     * (Keycloak 26.5 server-admin guide, "Client-suggested Identity Provider":
+     * "OIDC applications can bypass the login page by hinting at the identity
+     * provider via the {@code kc_idp_hint} query parameter on the
+     * authorization endpoint"). Returns the raw 302 response — caller picks
+     * the Location header and chases it.
+     */
+    private static Response beginIdpBrokeredLogin() {
+        Response response = given()
+                .redirects().follow(false)
+                .queryParam("client_id", SP_CLIENT)
+                .queryParam("response_type", "code")
+                .queryParam("redirect_uri", SP_REDIRECT_URI)
+                .queryParam("scope", "openid")
+                .queryParam("state", "idp-test-state")
+                .queryParam("nonce", "idp-test-nonce")
+                .queryParam("kc_idp_hint", IDP_ALIAS)
+                .when()
+                .get("/realms/" + SP_REALM + "/protocol/openid-connect/auth");
+
+        assertThat(response.statusCode())
+                .withFailMessage(
+                        "Expected SP /auth (with kc_idp_hint=%s) to 302-redirect to the IdP, got %d.%n"
+                                + "=== Body (first %d chars) ===%n%s%n"
+                                + "=== Keycloak container logs (last %d chars) ===%n%s%n",
+                        IDP_ALIAS, response.statusCode(),
+                        BODY_EXCERPT_LENGTH, bodyExcerpt(response),
+                        CONTAINER_LOG_TAIL_CHARS, tailLogs(KEYCLOAK, CONTAINER_LOG_TAIL_CHARS))
+                .isEqualTo(302);
+        return response;
+    }
+
+    /**
+     * Hop 2: follow the SP -> IdP 302 to the IdP realm's /auth endpoint and
+     * collect the IdP-realm AUTH_SESSION_ID cookie that the IdP sets when
+     * rendering its login page. The returned Response's
+     * {@code detailedCookies()} are scoped to the IdP realm and become the
+     * cookie bag for Hop 3's credential POST.
+     */
+    private static Response followToIdpLoginPage(String idpAuthUrl) {
+        String relative = stripToPathAndQuery(idpAuthUrl);
+        Response response = given()
+                .redirects().follow(false)
+                .when()
+                .get(relative);
+
+        assertThat(response.statusCode())
+                .withFailMessage(
+                        "Expected the IdP realm's /auth to render the login form (HTTP 200), got %d. "
+                                + "URL hit: %s. Body excerpt: %s",
+                        response.statusCode(), relative, bodyExcerpt(response))
+                .isEqualTo(200);
+        assertThat(response.getDetailedCookies().get("AUTH_SESSION_ID"))
+                .withFailMessage(
+                        "Expected AUTH_SESSION_ID cookie on the IdP login page (realm: %s). "
+                                + "Cookies actually set: %s",
+                        IDP_REALM, response.getDetailedCookies())
+                .isNotNull();
+        return response;
+    }
+
+    /**
+     * Hop 4: follow the IdP -> SP broker-callback redirect. This hop is where
+     * Keycloak (acting as SP) does the server-to-server token exchange with
+     * the IdP, reconciles the user, runs the post-broker-login flow (which is
+     * where the plugin fires), attaches the session, and emits the final 302
+     * to the original client's redirect_uri. The KEYCLOAK_IDENTITY cookie
+     * with the asserted Max-Age is set on this hop's response.
+     *
+     * <p>{@code spCookies} are the cookies from Hop 1's response (the SP
+     * realm's AUTH_SESSION_ID etc.). The IdP-side AUTH_SESSION_ID is on a
+     * different cookie path ({@code /realms/idp-realm/...}) and is irrelevant
+     * to this hop — passing it would be harmless but we don't, for clarity.
+     */
+    private static Response followBrokerCallback(String brokerCallbackUrl, Cookies spCookies) {
+        String relative = stripToPathAndQuery(brokerCallbackUrl);
+        return given()
+                .redirects().follow(false)
+                .cookies(spCookies)
+                .when()
+                .get(relative);
+    }
+
+    /**
+     * Shared with {@link #extractLoginFormAction(Response)}: Keycloak emits
+     * absolute URLs (host:port from request Host header) that the test JVM
+     * can't dial directly when those URLs reference the container's
+     * in-container port. Strip to path+query so REST Assured re-applies the
+     * mapped-port base URI.
+     */
+    private static String stripToPathAndQuery(String absoluteUrl) {
+        int schemeEnd = absoluteUrl.indexOf("://");
+        if (schemeEnd < 0) {
+            return absoluteUrl;
+        }
+        int pathStart = absoluteUrl.indexOf('/', schemeEnd + 3);
+        return pathStart >= 0 ? absoluteUrl.substring(pathStart) : "/";
     }
 
     // =======================================================================
