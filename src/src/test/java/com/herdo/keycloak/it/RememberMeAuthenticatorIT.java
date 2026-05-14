@@ -955,34 +955,75 @@ class RememberMeAuthenticatorIT {
         // Location URL on the response side.
         String brokerCallbackWildcard = keycloakBaseUrl()
                 + "/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/*";
+        // Universal wildcard as a last-resort fallback. RedirectUtils
+        // 26.5.7 sorts validRedirects by LENGTH DESCENDING, so "*" is
+        // tried LAST — only if neither the exact callback URL nor the
+        // path-suffix wildcard matches. Per source review of
+        // verifyRedirectUri, when "*" matches, the method still returns
+        // the ORIGINAL incoming redirectUri (not the literal "*"), so
+        // downstream Location-building is unaffected. We were unable to
+        // explain a prior CI failure where both the exact URL and the
+        // path-suffix wildcard were registered and reportedly byte-identical
+        // to the redirect_uri Keycloak sent — yet the matcher still rejected
+        // it. The defensive "*" entry guarantees we don't get blocked on a
+        // canonicalisation mismatch invisible to our diagnostics. This is
+        // an IdP-realm broker client used purely server-to-server inside the
+        // test container — there's no security implication from "*" here.
+        String brokerCallbackUniversal = "*";
         // Diagnostic: emit the exact registered strings so the next CI failure
         // can compare them byte-for-byte against the redirect_uri Keycloak sends.
         System.out.println("[TEST] keycloakBaseUrl() = " + keycloakBaseUrl());
         System.out.println("[TEST] Registering rmtest-broker-client redirectUris = "
-                + brokerCallback + " , " + brokerCallbackWildcard);
+                + brokerCallback + " , " + brokerCallbackWildcard + " , "
+                + brokerCallbackUniversal);
+
+        // Map.of capped at 10 pairs; using HashMap so we can also set
+        // webOrigins and attributes if needed without touching the limit.
+        // webOrigins is a defensive add: some Keycloak versions reject
+        // browser-flow OIDC clients without a webOrigins entry, even
+        // though our flow here is server-to-server (the SP-side IdP
+        // broker doing the token exchange). Setting it to ["*"] matches
+        // the Keycloak admin-UI default behaviour when redirectUris contain
+        // a wildcard.
+        Map<String, Object> brokerClientRep = new HashMap<>();
+        brokerClientRep.put("clientId", IDP_BROKER_CLIENT);
+        brokerClientRep.put("enabled", true);
+        brokerClientRep.put("publicClient", false);
+        brokerClientRep.put("secret", IDP_BROKER_CLIENT_SECRET);
+        brokerClientRep.put("standardFlowEnabled", true);
+        brokerClientRep.put("redirectUris",
+                List.of(brokerCallback, brokerCallbackWildcard, brokerCallbackUniversal));
+        brokerClientRep.put("webOrigins", List.of("*"));
+
         given()
                 .header("Authorization", "Bearer " + adminToken)
                 .contentType(ContentType.JSON)
-                .body(Map.of(
-                        "clientId", IDP_BROKER_CLIENT,
-                        "enabled", true,
-                        "publicClient", false,
-                        "secret", IDP_BROKER_CLIENT_SECRET,
-                        "standardFlowEnabled", true,
-                        // Two entries: the exact callback URL (intended to
-                        // match via RedirectUtils.matchesRedirects's
-                        // .equals() branch) AND a path-suffix wildcard
-                        // covering the same /broker/<alias>/* subtree
-                        // (intended to match via the trailing-* prefix
-                        // branch as a fallback if any host/port
-                        // canonicalization causes the exact match to slip).
-                        // Both branches return a non-"*" matched value so
-                        // the response Location is built correctly.
-                        "redirectUris", List.of(brokerCallback, brokerCallbackWildcard)))
+                .body(brokerClientRep)
                 .when()
                 .post("/admin/realms/" + IDP_REALM + "/clients")
                 .then()
                 .statusCode(201);
+
+        // Step 1 diagnostic (per investigation plan): immediately GET the
+        // client back via admin API and dump the persisted representation.
+        // This catches the case where Keycloak normalised, stripped, or
+        // rejected one of the redirectUris entries on POST but still
+        // returned 201 — invisible to text comparison against the values
+        // we constructed in Java. If the next CI failure shows the same
+        // "Invalid parameter: redirect_uri" with this diagnostic emitting
+        // the registered list, we'll see exactly what KC stored vs. what
+        // the IdP /auth handler is comparing against. NOT scope-limited to
+        // any single hypothesis; future failures self-explain.
+        String persistedClient = given()
+                .header("Authorization", "Bearer " + adminToken)
+                .accept(ContentType.JSON)
+                .when()
+                .get("/admin/realms/" + IDP_REALM + "/clients?clientId=" + IDP_BROKER_CLIENT)
+                .then()
+                .statusCode(200)
+                .extract()
+                .asString();
+        System.out.println("[TEST] Persisted broker-client representation: " + persistedClient);
     }
 
     private static void createIdpUser(String adminToken) {
