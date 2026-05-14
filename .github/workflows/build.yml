@@ -72,6 +72,7 @@ jobs:
       image_tag_sha: ${{ steps.meta.outputs.image_tag_sha }}
       image_ref_sha: ${{ steps.meta.outputs.image_ref_sha }}
       kc_version: ${{ steps.meta.outputs.kc_version }}
+      plugin_git_sha: ${{ steps.meta.outputs.plugin_git_sha }}
       release_version: ${{ steps.meta.outputs.release_version }}
 
     # Permission notes for this job:
@@ -497,6 +498,14 @@ jobs:
         # (`generate_release_notes`, `draft`, `prerelease`, `name`, `body`,
         # `files`, `tag_name`, etc.) is identical to v2. Release title
         # defaults to the tag name, which is what we want.
+        #
+        # `body` is pre-pended to the auto-generated commit changelog when
+        # `generate_release_notes: true` is also set -- verified against
+        # softprops/action-gh-release v3.0.0 README ("If body is specified,
+        # the body will be pre-pended to the automatically generated
+        # notes."). Net effect: the Image section below renders FIRST on
+        # the release page, followed by the auto-generated "What's
+        # Changed" / "Full Changelog" section.
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
@@ -505,3 +514,19 @@ jobs:
           # When we do, set prerelease conditionally from a shell step that
           # inspects the tag suffix and writes to $GITHUB_OUTPUT.
           prerelease: false
+          body: |
+            ## Image
+
+            - `ghcr.io/${{ github.repository_owner }}/keycloak-bundled:${{ needs.build-and-push.outputs.release_version }}`
+            - `${{ needs.build-and-push.outputs.image_ref_sha }}`
+            - `ghcr.io/${{ github.repository_owner }}/keycloak-bundled:latest`
+
+            ```sh
+            docker pull ghcr.io/${{ github.repository_owner }}/keycloak-bundled:${{ needs.build-and-push.outputs.release_version }}
+            ```
+
+            **Architectures:** linux/amd64, linux/arm64
+
+            **Built from:** Keycloak ${{ needs.build-and-push.outputs.kc_version }} + Herdo's remember-me SPI authenticator (commit ${{ needs.build-and-push.outputs.plugin_git_sha }})
+
+            **Attestations:** SBOM + SLSA provenance attached to the manifest list digest
