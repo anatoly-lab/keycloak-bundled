@@ -451,7 +451,15 @@ jobs:
       # "Guard against tag overwrite" pre-check and the "Promote..." step
       # below read this so we don't construct the ref string in two places
       # (where they could silently drift).
-      TARGET_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.release_version }}
+      #
+      # NOTE: GitHub Actions does NOT allow ${{ env.X }} references inside an
+      # `env:` block declaration -- env values can only be consumed in `run:`
+      # scripts, not composed from other env values at declaration time.
+      # Constructing from `github.repository_owner` (always available) + the
+      # `needs.*` output is the workaround. The literal `ghcr.io/...keycloak-bundled`
+      # path is duplicated from workflow-level env intentionally; the alternative
+      # would be reconstructing the ref string in each `run:` block.
+      TARGET_REF: ghcr.io/${{ github.repository_owner }}/keycloak-bundled:${{ needs.build-and-push.outputs.release_version }}
 
     steps:
       - name: Log in to GitHub Container Registry
