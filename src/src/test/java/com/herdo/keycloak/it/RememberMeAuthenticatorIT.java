@@ -350,21 +350,47 @@ class RememberMeAuthenticatorIT {
         createPostBrokerLoginFlowWithRememberMe(adminToken);
         bindPostBrokerFlowToIdp(adminToken);
 
-        // --- Hop 1: SP /auth with kc_idp_hint -> 302 to IdP /auth ------
+        // --- Hop 1: SP /auth with kc_idp_hint -> 303 to SP's internal
+        //            /broker/<alias>/login endpoint (NOT the upstream IdP yet).
+        // Keycloak's IdentityProviderRedirector emits the SP-internal redirect
+        // first to plant SP-realm cookies (AUTH_SESSION_ID, KC_RESTART, etc.)
+        // and persist the in-progress auth session state, then the broker
+        // /login endpoint itself emits the redirect to the upstream IdP.
         Response spAuthRedirect = beginIdpBrokeredLogin();
-        String idpAuthUrl = spAuthRedirect.getHeader("Location");
-        assertThat(idpAuthUrl)
+        String brokerLoginUrl = spAuthRedirect.getHeader("Location");
+        assertThat(brokerLoginUrl)
                 .withFailMessage(
                         "Expected SP /auth (with kc_idp_hint=%s) to redirect (302/303) "
-                                + "the browser to the upstream IdP's /auth endpoint. "
+                                + "to SP's /realms/%s/broker/%s/login endpoint. "
                                 + "Status was %d, Location was %s.%n"
                                 + "=== All response headers ===%n%s%n"
                                 + "=== Body (first %d chars) ===%n%s%n"
                                 + "=== Keycloak container logs (last %d chars) ===%n%s%n",
-                        IDP_ALIAS, spAuthRedirect.statusCode(), idpAuthUrl,
+                        IDP_ALIAS, SP_REALM, IDP_ALIAS,
+                        spAuthRedirect.statusCode(), brokerLoginUrl,
                         spAuthRedirect.getHeaders().toString(),
                         BODY_EXCERPT_LENGTH, bodyExcerpt(spAuthRedirect),
                         CONTAINER_LOG_TAIL_CHARS, tailLogs(KEYCLOAK, CONTAINER_LOG_TAIL_CHARS))
+                .contains("/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/login");
+
+        // --- Hop 1.5: follow /broker/<alias>/login (still on the SP) ->
+        //              303 to upstream IdP /auth. Carry SP-realm cookies
+        //              from Hop 1 so the in-progress auth session is found.
+        Response brokerLoginRedirect = given()
+                .redirects().follow(false)
+                .cookies(spAuthRedirect.getDetailedCookies())
+                .when()
+                .get(stripToPathAndQuery(brokerLoginUrl));
+        String idpAuthUrl = brokerLoginRedirect.getHeader("Location");
+        assertThat(idpAuthUrl)
+                .withFailMessage(
+                        "Expected SP /broker/%s/login to redirect (302/303) to the upstream IdP's "
+                                + "/auth endpoint. Status was %d, Location was %s.%n"
+                                + "=== All response headers ===%n%s%n"
+                                + "=== Body (first %d chars) ===%n%s%n",
+                        IDP_ALIAS, brokerLoginRedirect.statusCode(), idpAuthUrl,
+                        brokerLoginRedirect.getHeaders().toString(),
+                        BODY_EXCERPT_LENGTH, bodyExcerpt(brokerLoginRedirect))
                 .contains("/realms/" + IDP_REALM + "/protocol/openid-connect/auth");
 
         // --- Hop 2: GET the IdP /auth -> 200 with login form -----------
