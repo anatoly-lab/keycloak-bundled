@@ -1,0 +1,150 @@
+---
+# Build & push the custom Keycloak image (Keycloak + Herdo remember-me SPI).
+#
+# See CLAUDE.md and the project brief for the why. This workflow's only job is
+# to produce a reproducible OCI image and push it to GitHub Container Registry
+# (ghcr.io) under three tags (immutable build, daily, latest).
+#
+# Triggers:
+#   - push to main      -> rebuild on every merge
+#   - tag push v*       -> release builds (concurrency does NOT cancel these)
+#   - workflow_dispatch -> manual rebuild, optional KC/plugin overrides
+#
+# Registry auth:
+#   Uses GITHUB_TOKEN (auto-provisioned per-job) with `packages: write` to push
+#   to ghcr.io under the owning user/org's namespace. No PAT required.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      kc_version:
+        description: 'Keycloak version (must match anki-mcp-infrastructure operator version)'
+        required: false
+        default: '26.5.7'
+      plugin_git_sha:
+        description: 'Upstream Herdo/keycloak-remember-me-authenticator commit, for the OCI label'
+        required: false
+        default: 'de35b36'
+
+# Least-privilege: this workflow neither reads issues/PRs nor writes back to
+# the repo. `contents: read` is needed for actions/checkout. `packages: write`
+# is required for the GITHUB_TOKEN to push to ghcr.io.
+permissions:
+  contents: read
+  packages: write
+
+# Cancel in-progress builds on main when a newer push lands (saves CI minutes
+# on rapid-succession merges). Do NOT cancel tag builds -- a v* tag push is a
+# release artifact and must complete even if main is moving.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/keycloak-bundled
+  # Fallback defaults for non-dispatch triggers. Keep in sync with the
+  # workflow_dispatch input defaults above.
+  DEFAULT_KC_VERSION: '26.5.7'
+  DEFAULT_PLUGIN_GIT_SHA: 'de35b36'
+
+jobs:
+  build-and-push:
+    name: Build and push image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lint Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@v3
+        with:
+          dockerfile: ./Dockerfile
+
+      - name: Lint workflow files (actionlint)
+        # raven-actions/actionlint is the conventional wrapper around rhysd's
+        # actionlint CLI. The rhysd/actionlint repo itself is a Go CLI with no
+        # action.yml, so a wrapper is required if we want `uses:` semantics.
+        uses: raven-actions/actionlint@v2
+
+      - name: Compute build metadata
+        id: meta
+        # User-supplied dispatch inputs are exposed via env (not inline ${{ }})
+        # so the shell never sees them as code -- see
+        # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+        env:
+          INPUT_KC_VERSION: ${{ github.event.inputs.kc_version }}
+          INPUT_PLUGIN_GIT_SHA: ${{ github.event.inputs.plugin_git_sha }}
+          GH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Inputs take precedence on workflow_dispatch; otherwise use env defaults.
+          KC_VERSION="${INPUT_KC_VERSION:-${DEFAULT_KC_VERSION}}"
+          PLUGIN_GIT_SHA="${INPUT_PLUGIN_GIT_SHA:-${DEFAULT_PLUGIN_GIT_SHA}}"
+          VCS_REF="${GH_SHA}"
+          VCS_REF_SHORT="${VCS_REF:0:7}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          DATE_TAG="$(date -u +%Y.%m.%d)"
+
+          {
+            echo "kc_version=${KC_VERSION}"
+            echo "plugin_git_sha=${PLUGIN_GIT_SHA}"
+            echo "vcs_ref=${VCS_REF}"
+            echo "vcs_ref_short=${VCS_REF_SHORT}"
+            echo "build_date=${BUILD_DATE}"
+            echo "date_tag=${DATE_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved KC_VERSION=${KC_VERSION}"
+          echo "Resolved PLUGIN_GIT_SHA=${PLUGIN_GIT_SHA}"
+          echo "Resolved VCS_REF_SHORT=${VCS_REF_SHORT}"
+          echo "Resolved BUILD_DATE=${BUILD_DATE}"
+          echo "Resolved DATE_TAG=${DATE_TAG}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # Multi-arch: arm64 is QEMU-emulated on the GitHub amd64 runner, which
+          # adds ~5-10 minutes to the Maven and `kc.sh build` phases. The
+          # cluster supports both archs (staging runs on Apple Silicon under
+          # QEMU), so we publish a manifest list covering both.
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            KC_VERSION=${{ steps.meta.outputs.kc_version }}
+            PLUGIN_GIT_SHA=${{ steps.meta.outputs.plugin_git_sha }}
+            VCS_REF=${{ steps.meta.outputs.vcs_ref }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+            IMAGE_SOURCE=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # SBOM (CycloneDX/SPDX) and max-mode provenance attestation. Both
+          # land in the registry alongside the manifest and surface on the
+          # ghcr.io package page for supply-chain inspection.
+          sbom: true
+          provenance: mode=max
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.kc_version }}-${{ steps.meta.outputs.date_tag }}-${{ steps.meta.outputs.vcs_ref_short }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.kc_version }}-${{ steps.meta.outputs.date_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest

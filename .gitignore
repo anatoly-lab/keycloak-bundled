@@ -1,0 +1,29 @@
+# Maven / Java build output
+target/
+*.class
+# Track pom.xml & sources, but never built JARs from local `mvn package` runs.
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+
+# IntelliJ / Eclipse / VS Code
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.classpath
+.project
+.settings/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Local env scratch
+.env
+.env.local

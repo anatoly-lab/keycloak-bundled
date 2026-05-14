@@ -1,0 +1,40 @@
+# Keep build context tight: only src/ is a build input.
+
+# Everything by default...
+*
+
+# ...then re-include what the Dockerfile actually COPYs.
+!src/
+!src/**
+
+# Defense in depth: even within src/, exclude any locally-built artifacts.
+src/target/
+src/**/target/
+src/**/*.class
+
+# Git metadata
+.git/
+.gitignore
+.gitattributes
+
+# CI / docs / repo metadata -- never read by the build.
+.github/
+CLAUDE.md
+README.md
+README*.md
+NOTICE
+LICENSE
+
+# IDE noise
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Stray logs
+*.log

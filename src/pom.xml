@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.herdo.keycloak</groupId>
+    <artifactId>keycloak-remember-me-authenticator</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Keycloak Remember Me Authenticator</name>
+    <description>
+        Vendored Keycloak SPI plugin that unconditionally sets the rememberMe auth-session note
+        after authentication, so every auth path (direct login, social/IdP brokered login)
+        produces a persistent KEYCLOAK_IDENTITY cookie.
+
+        Vendored from https://github.com/Herdo/keycloak-remember-me-authenticator (MIT).
+        See NOTICE for provenance.
+    </description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>21</maven.compiler.release>
+        <version.keycloak>26.5.7</version.keycloak>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!--
+                Keycloak parent BOM. Per Keycloak 26.5 server-development docs
+                (docs/documentation/server_development/topics/providers.adoc),
+                importing keycloak-parent aligns all org.keycloak:* artifact versions
+                with the targeted Keycloak release.
+            -->
+            <dependency>
+                <groupId>org.keycloak</groupId>
+                <artifactId>keycloak-parent</artifactId>
+                <version>${version.keycloak}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!--
+            keycloak-core: org.keycloak.Config (used by AuthenticatorFactory#init).
+        -->
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-core</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!--
+            keycloak-server-spi: public SPI surface.
+            Provides:
+              - org.keycloak.events.Details
+              - org.keycloak.models.{KeycloakSession, KeycloakSessionFactory,
+                                    RealmModel, UserModel, AuthenticationExecutionModel}
+              - org.keycloak.provider.ProviderConfigProperty
+        -->
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-server-spi</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!--
+            keycloak-server-spi-private: internal/authentication SPI surface.
+            Provides:
+              - org.keycloak.authentication.{AuthenticationFlowContext, Authenticator,
+                                             AuthenticatorFactory, ConfigurableAuthenticatorFactory}
+        -->
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-server-spi-private</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!-- Predictable JAR name for the Dockerfile COPY step. -->
+        <finalName>keycloak-remember-me-authenticator</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

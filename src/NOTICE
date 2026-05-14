@@ -1,0 +1,48 @@
+keycloak-remember-me-authenticator (vendored)
+=============================================
+
+This directory contains a vendored copy of the keycloak-remember-me-authenticator
+SPI plugin by Stefan Over ("Herdo").
+
+  Upstream:   https://github.com/Herdo/keycloak-remember-me-authenticator
+  Commit:     de35b3603de348c44a532c011079d3e687ab10b6
+  License:    MIT (see ./LICENSE)
+  Copyright:  (c) 2023 Stefan Over
+
+Why vendored
+------------
+The upstream repo's prebuilt 1.0.0 JAR release (2023) is compiled against
+Keycloak 20.x and ships with a pom.xml that pins stale dependency versions
+(see upstream issue #9). Rather than consuming the published JAR, we rebuild
+from source against the Keycloak release deployed by anki-mcp-infrastructure
+so the plugin's classpath is binary-compatible with the running server.
+
+Local modifications vs upstream
+-------------------------------
+Java source under src/main/java:
+    VERBATIM. No changes (including license headers and code style).
+
+SPI registration src/main/resources/META-INF/services/org.keycloak.authentication.AuthenticatorFactory:
+    VERBATIM.
+
+pom.xml:
+    REWRITTEN against the Keycloak 26.5.7 parent BOM. Specifically:
+      - Imports org.keycloak:keycloak-parent:26.5.7 via <dependencyManagement>
+        (per Keycloak 26.5 server-development docs).
+      - Drops the upstream keycloak-services dependency: not referenced by
+        any import in the Java sources.
+      - Drops the upstream <distributionManagement> block: we don't publish
+        to GitHub Packages from this repo, the JAR is consumed only by the
+        sibling Dockerfile.
+      - Targets Java 21 release (maven.compiler.release=21) — Keycloak 26
+        supports JDK 17 and 21; we standardize on 21 to track the latest
+        Keycloak-supported LTS.
+      - Bumps maven-compiler-plugin to 3.13.0.
+      - Sets <finalName>keycloak-remember-me-authenticator</finalName> for
+        a predictable JAR filename consumed by the Dockerfile.
+
+src/main/resources/META-INF/jboss-deployment-structure.xml:
+    OMITTED. That file is for the legacy WildFly-based Keycloak deployment
+    model (pre-17). Keycloak 17+ is Quarkus-based and uses the
+    /opt/keycloak/providers/ JAR drop + `kc.sh build` model, which makes the
+    JBoss module descriptor a no-op. Excluding it keeps the artifact clean.
