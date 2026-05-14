@@ -103,7 +103,16 @@ class RememberMeAuthenticatorIT {
             // on the management port (9000). Without it the wait strategy below
             // hits a closed port and times out. The CI smoke job sets the same.
             .withEnv("KC_HEALTH_ENABLED", "true")
-            .withEnv("KEYCLOAK_FRONTEND_URL", "http://localhost:8080")
+            // No KC_HOSTNAME / KEYCLOAK_FRONTEND_URL on purpose. Keycloak's
+            // hostname-v2 (default in 25+) dynamically resolves scheme/host/port
+            // from the incoming request when KC_HOSTNAME is unset, which is
+            // exactly what Testcontainers needs: container 8080 is mapped to a
+            // random host port, so any baked-in frontend URL would either be
+            // ignored (legacy v1 option in 26) or cause issuer/redirect-URL
+            // mismatches surfacing as 400 from /auth. Confirmed against
+            // Keycloak 26.5 docs (guides/server/hostname.adoc, hostname-v2):
+            // "If the port is not part of the URL, it is dynamically resolved
+            // from the incoming request headers."
             // start-dev avoids the full DB requirement; sufficient for behavioural tests.
             .withCommand("start-dev")
             .withExposedPorts(8080, 9000)
