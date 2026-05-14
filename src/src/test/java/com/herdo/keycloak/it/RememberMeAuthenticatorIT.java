@@ -88,11 +88,22 @@ class RememberMeAuthenticatorIT {
     private static final long MAX_AGE_TOLERANCE_SECONDS = 60L;
 
     /**
-     * Captures the first ~400 chars of an HTML response body for inclusion
-     * in assertion failure messages. The full body is overwhelmingly large
-     * (Keycloak login page is ~10 KB) and unhelpful in CI logs.
+     * Captures the first ~4000 chars of an HTML response body for inclusion
+     * in assertion failure messages. Keycloak's login-pf error template is
+     * ~2–3 KB; 4 KB is enough to include the actual error message block
+     * (typically near the top of {@code <body>} in a
+     * {@code <span id="kc-page-title">} or {@code class="kc-feedback-text"}
+     * element) while still keeping CI log noise bounded.
      */
-    private static final int BODY_EXCERPT_LENGTH = 400;
+    private static final int BODY_EXCERPT_LENGTH = 4_000;
+
+    /**
+     * Number of trailing characters of the Keycloak container's combined
+     * stdout/stderr to dump into assertion failure messages. ~10 KB captures
+     * the last few seconds of server activity (which is where the cause of
+     * a 4xx from {@code /auth} will be logged) without flooding CI output.
+     */
+    private static final int CONTAINER_LOG_TAIL_CHARS = 10_000;
 
     @Container
     @SuppressWarnings("resource")
@@ -115,6 +126,16 @@ class RememberMeAuthenticatorIT {
             // from the incoming request headers."
             // start-dev avoids the full DB requirement; sufficient for behavioural tests.
             .withCommand("start-dev")
+            // Stream the container's stdout/stderr to the surefire/failsafe
+            // console so Keycloak's own log lines (which include the reason
+            // for any 4xx from /auth, e.g. "Invalid parameter: redirect_uri",
+            // "Client not enabled", etc.) appear in CI output. We use a
+            // plain System.out-based consumer rather than Slf4jLogConsumer
+            // because slf4j-simple/log4j-slf4j may not be on the test
+            // runtime classpath (testcontainers ships only the slf4j API).
+            // Lambda receives OutputFrame; getUtf8String() already includes
+            // the trailing newline emitted by Keycloak's logger.
+            .withLogConsumer(frame -> System.out.print("[KC] " + frame.getUtf8String()))
             .withExposedPorts(8080, 9000)
             // /health/ready is served on the management port (9000) once Keycloak is fully up.
             .waitingFor(
@@ -434,9 +455,14 @@ class RememberMeAuthenticatorIT {
 
         assertThat(response.statusCode())
                 .withFailMessage(
-                        "OIDC /auth endpoint must return 200 with the login form HTML, "
-                                + "got %d. Body excerpt: %s",
-                        response.statusCode(), bodyExcerpt(response))
+                        "OIDC /auth endpoint must return 200 with the login form HTML, got %d.%n"
+                                + "=== Body (first %d chars) ===%n%s%n"
+                                + "=== Keycloak container logs (last %d chars) ===%n%s%n",
+                        response.statusCode(),
+                        BODY_EXCERPT_LENGTH,
+                        bodyExcerpt(response),
+                        CONTAINER_LOG_TAIL_CHARS,
+                        tailLogs(KEYCLOAK, CONTAINER_LOG_TAIL_CHARS))
                 .isEqualTo(200);
         assertThat(response.getDetailedCookies().get("AUTH_SESSION_ID"))
                 .withFailMessage(
@@ -515,5 +541,30 @@ class RememberMeAuthenticatorIT {
         return body.length() <= BODY_EXCERPT_LENGTH
                 ? body
                 : body.substring(0, BODY_EXCERPT_LENGTH) + "...<truncated>";
+    }
+
+    /**
+     * Returns the last {@code maxChars} characters of the container's
+     * cumulative stdout+stderr. {@link GenericContainer#getLogs()} returns
+     * everything emitted since startup, which after several minutes of
+     * Keycloak bootstrap noise is far too much to surface in an assertion
+     * failure message — the interesting bits (the actual error logged in
+     * response to the failing request) are always at the tail. Safe to call
+     * even if log retrieval throws; we never want a diagnostics helper to
+     * mask the original assertion failure.
+     */
+    private static String tailLogs(GenericContainer<?> container, int maxChars) {
+        try {
+            String logs = container.getLogs();
+            if (logs == null || logs.isEmpty()) {
+                return "<no container logs available>";
+            }
+            return logs.length() <= maxChars
+                    ? logs
+                    : "...<truncated head>...\n" + logs.substring(logs.length() - maxChars);
+        } catch (RuntimeException e) {
+            return "<failed to retrieve container logs: " + e.getClass().getSimpleName()
+                    + ": " + e.getMessage() + ">";
+        }
     }
 }
