@@ -902,18 +902,64 @@ class RememberMeAuthenticatorIT {
     /**
      * Creates the confidential client inside {@link #IDP_REALM} that the
      * SP-realm IdP configuration will authenticate as during the Authorization
-     * Code Flow (Hop 3 -> Hop 4 in the test). The {@code redirectUris} entry
-     * is the broker callback URL on the SP side, per
+     * Code Flow (Hop 3 -> Hop 4 in the test). The {@code redirectUris} entries
+     * cover the broker callback URL on the SP side, per
      * {@code IdentityBrokerService#getEndpoint} ({@code @Path("{provider_alias}/endpoint")})
      * in Keycloak 26.5.7 — i.e. {@code /realms/{SP_REALM}/broker/{IDP_ALIAS}/endpoint}.
+     *
+     * <p><b>Why a path-suffix wildcard rather than literal {@code "*"} or a
+     * single exact URL.</b> Reading
+     * {@code services/src/main/java/org/keycloak/protocol/oidc/utils/RedirectUtils.java}
+     * (Keycloak 26.5.7), {@code matchesRedirects} has three branches:
+     * <ol>
+     *   <li>literal {@code "*"}: short-circuits and returns {@code "*"} as
+     *       the matched value. This survived {@code verifyRedirectUri}'s
+     *       scheme check (because the request scheme is {@code http}, the
+     *       guard {@code !"http".equalsIgnoreCase(scheme)} is false and
+     *       {@code valid} stays {@code "*"}) — but the downstream response
+     *       builder ({@code OIDCLoginProtocol.authenticated} →
+     *       {@code OIDCRedirectUriBuilder.fromUri}) emitted a malformed
+     *       Location header in our run (the original URL ended up
+     *       URL-encoded into the response Location's path segment). So
+     *       literal {@code "*"} is out.</li>
+     *   <li>trailing-{@code *} prefix wildcard ({@code validRedirect.endsWith("*")}
+     *       and {@code allowWildcards}): strips the trailing {@code *} and
+     *       does {@code redirect.startsWith(prefix)}. Confirmed by Keycloak's
+     *       own {@code RedirectUtilsTest#testverifyRedirectUriHttps} —
+     *       registering {@code https://keycloak.org/parent/*} matches
+     *       {@code https://keycloak.org/parent/child}. Returns the PREFIX
+     *       (e.g. {@code http://localhost:32769/realms/rmtest-idp/broker/idp-via-keycloak/})
+     *       as the matched value — not {@code "*"} — which steers the
+     *       downstream response builder onto the same code path as exact
+     *       matches and avoids the literal-{@code "*"} bug above.</li>
+     *   <li>exact {@code .equals()} match: textually identical strings.
+     *       Our previous run registered the byte-identical URL and STILL
+     *       got "Invalid parameter: redirect_uri" — implying some
+     *       canonicalization mismatch in the test environment we couldn't
+     *       reproduce locally. The path-suffix wildcard sidesteps the
+     *       mismatch entirely.</li>
+     * </ol>
+     *
+     * <p>Pattern: {@code <base>/realms/<sp-realm>/broker/<alias>/*}. This is
+     * the same shape Keycloak documents in its admin UI's "Valid redirect
+     * URIs" help text ("URI to redirect to after a successful login.
+     * Simple wildcards are allowed e.g. http://example.com/*").
      */
     private static void createIdpBrokerClient(String adminToken) {
         String brokerCallback = keycloakBaseUrl()
                 + "/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/endpoint";
-        // Diagnostic: emit the exact registered string so the next CI failure
-        // can compare it byte-for-byte against the redirect_uri Keycloak sends.
+        // Path-suffix wildcard form. Trailing "*" engages Keycloak's
+        // prefix-match branch in RedirectUtils#matchesRedirects (Keycloak
+        // 26.5.7), which returns the stripped prefix as the match — NOT
+        // the literal "*" — so OIDCRedirectUriBuilder builds a proper
+        // Location URL on the response side.
+        String brokerCallbackWildcard = keycloakBaseUrl()
+                + "/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/*";
+        // Diagnostic: emit the exact registered strings so the next CI failure
+        // can compare them byte-for-byte against the redirect_uri Keycloak sends.
         System.out.println("[TEST] keycloakBaseUrl() = " + keycloakBaseUrl());
-        System.out.println("[TEST] Registering rmtest-broker-client redirectUris = " + brokerCallback);
+        System.out.println("[TEST] Registering rmtest-broker-client redirectUris = "
+                + brokerCallback + " , " + brokerCallbackWildcard);
         given()
                 .header("Authorization", "Bearer " + adminToken)
                 .contentType(ContentType.JSON)
@@ -923,13 +969,16 @@ class RememberMeAuthenticatorIT {
                         "publicClient", false,
                         "secret", IDP_BROKER_CLIENT_SECRET,
                         "standardFlowEnabled", true,
-                        // Wildcard added alongside the exact URL. Keycloak treats
-                        // "*" as "match any redirect_uri" -- acceptable for a test
-                        // realm (NEVER use this in production). It bypasses any
-                        // subtle host/port canonicalization mismatch between the
-                        // value we register here and the value Keycloak's SP-side
-                        // broker generates from the incoming request's Host header.
-                        "redirectUris", List.of(brokerCallback, "*")))
+                        // Two entries: the exact callback URL (intended to
+                        // match via RedirectUtils.matchesRedirects's
+                        // .equals() branch) AND a path-suffix wildcard
+                        // covering the same /broker/<alias>/* subtree
+                        // (intended to match via the trailing-* prefix
+                        // branch as a fallback if any host/port
+                        // canonicalization causes the exact match to slip).
+                        // Both branches return a non-"*" matched value so
+                        // the response Location is built correctly.
+                        "redirectUris", List.of(brokerCallback, brokerCallbackWildcard)))
                 .when()
                 .post("/admin/realms/" + IDP_REALM + "/clients")
                 .then()
