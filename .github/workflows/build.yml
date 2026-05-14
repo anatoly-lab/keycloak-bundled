@@ -408,15 +408,19 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run integration tests (Maven verify)
-        # `-pl src` scopes Reactor to the plugin module (the only module).
+        # Pom lives at src/pom.xml as a single-module project (no parent pom
+        # at repo root), so we cd into src/ via `working-directory` rather
+        # than try `-pl src` -- the latter would require src/ to be a
+        # declared <module> in a parent pom, which it isn't.
         # `-B -ntp` is non-interactive batch + no transfer progress, the
         # standard CI duo. The `image.ref` system property is the agreed
         # handshake with the *IT.java tests: they read it via
         # System.getProperty and feed it into Testcontainers.
+        working-directory: src
         run: |
           set -euo pipefail
           echo "Running integration tests against image: ${KC_IMAGE}"
-          mvn -B -ntp -pl src verify -Dimage.ref="${KC_IMAGE}"
+          mvn -B -ntp verify -Dimage.ref="${KC_IMAGE}"
 
       - name: Upload Failsafe reports on failure
         if: failure()
