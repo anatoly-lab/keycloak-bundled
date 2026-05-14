@@ -1,9 +1,10 @@
 ---
 # Build & push the custom Keycloak image (Keycloak + Herdo remember-me SPI).
 #
-# See CLAUDE.md and the project brief for the why. This workflow's only job is
-# to produce a reproducible OCI image and push it to GitHub Container Registry
-# (ghcr.io) under three tags (immutable build, daily, latest).
+# See CLAUDE.md and the project brief for the why. This workflow produces a
+# reproducible OCI image, pushes it to GHCR under multiple tags, then runs a
+# pair of downstream verification jobs (boot smoke test + Testcontainers
+# integration tests). On `v*` tag pushes it also publishes a GitHub Release.
 #
 # Triggers:
 #   - push to main      -> rebuild on every merge
@@ -31,9 +32,9 @@ on:
         required: false
         default: 'de35b36'
 
-# Least-privilege: this workflow neither reads issues/PRs nor writes back to
-# the repo. `contents: read` is needed for actions/checkout. `packages: write`
-# is required for the GITHUB_TOKEN to push to ghcr.io.
+# Least-privilege at the workflow level. Individual jobs narrow further where
+# they can (smoke-test and integration-test only need to *pull* from GHCR, and
+# the release step needs `contents: write` to create the Release on tag push).
 permissions:
   contents: read
   packages: write
@@ -57,6 +58,27 @@ jobs:
   build-and-push:
     name: Build and push image
     runs-on: ubuntu-latest
+
+    # Job-level outputs surface the immutable image tag (and a few inputs) to
+    # downstream jobs. `smoke-test` and `integration-test` both pull by the
+    # SHA-suffixed tag because it is the only tag guaranteed to identify *this
+    # exact build* -- `latest` and the per-day tag can race with a parallel run.
+    # On `v*` tag pushes we also expose the stripped semver so the release step
+    # can reference it without recomputing.
+    outputs:
+      image_tag_sha: ${{ steps.meta.outputs.image_tag_sha }}
+      image_ref_sha: ${{ steps.meta.outputs.image_ref_sha }}
+      kc_version: ${{ steps.meta.outputs.kc_version }}
+      release_version: ${{ steps.meta.outputs.release_version }}
+
+    # Permission notes for this job:
+    #   contents: write -- required by softprops/action-gh-release to create
+    #     the GitHub Release on `v*` tag push. The step itself is gated on the
+    #     tag-push condition, but the permission has to be granted job-wide.
+    #   packages: write -- push to GHCR.
+    permissions:
+      contents: write
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -86,6 +108,7 @@ jobs:
           INPUT_KC_VERSION: ${{ github.event.inputs.kc_version }}
           INPUT_PLUGIN_GIT_SHA: ${{ github.event.inputs.plugin_git_sha }}
           GH_SHA: ${{ github.sha }}
+          GH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           # Inputs take precedence on workflow_dispatch; otherwise use env defaults.
@@ -96,6 +119,18 @@ jobs:
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           DATE_TAG="$(date -u +%Y.%m.%d)"
 
+          IMAGE_TAG_SHA="${KC_VERSION}-${DATE_TAG}-${VCS_REF_SHORT}"
+          IMAGE_REF_SHA="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG_SHA}"
+
+          # On a `v*` tag push, expose the v-stripped form (e.g. `v1.0.0` ->
+          # `1.0.0`) so we can publish it as an extra image tag and reuse it
+          # in the GitHub Release step. Empty otherwise; downstream `if:`
+          # guards on `startsWith(github.ref, 'refs/tags/v')` regardless.
+          RELEASE_VERSION=""
+          if [[ "${GH_REF}" == refs/tags/v* ]]; then
+            RELEASE_VERSION="${GH_REF#refs/tags/v}"
+          fi
+
           {
             echo "kc_version=${KC_VERSION}"
             echo "plugin_git_sha=${PLUGIN_GIT_SHA}"
@@ -103,6 +138,9 @@ jobs:
             echo "vcs_ref_short=${VCS_REF_SHORT}"
             echo "build_date=${BUILD_DATE}"
             echo "date_tag=${DATE_TAG}"
+            echo "image_tag_sha=${IMAGE_TAG_SHA}"
+            echo "image_ref_sha=${IMAGE_REF_SHA}"
+            echo "release_version=${RELEASE_VERSION}"
           } >> "$GITHUB_OUTPUT"
 
           echo "Resolved KC_VERSION=${KC_VERSION}"
@@ -110,6 +148,8 @@ jobs:
           echo "Resolved VCS_REF_SHORT=${VCS_REF_SHORT}"
           echo "Resolved BUILD_DATE=${BUILD_DATE}"
           echo "Resolved DATE_TAG=${DATE_TAG}"
+          echo "Resolved IMAGE_TAG_SHA=${IMAGE_TAG_SHA}"
+          echo "Resolved RELEASE_VERSION=${RELEASE_VERSION:-<none>}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -148,7 +188,243 @@ jobs:
           # ghcr.io package page for supply-chain inspection.
           sbom: true
           provenance: mode=max
+          # The fourth tag is only emitted on `v*` tag pushes. The ternary
+          # expression collapses to an empty string otherwise, and the
+          # docker/build-push-action input parser drops blank lines from this
+          # multi-line list -- so non-tag builds still publish exactly three
+          # tags, byte-identical to the pre-release pipeline.
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.kc_version }}-${{ steps.meta.outputs.date_tag }}-${{ steps.meta.outputs.vcs_ref_short }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag_sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.kc_version }}-${{ steps.meta.outputs.date_tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}/{1}:{2}', env.REGISTRY, env.IMAGE_NAME, steps.meta.outputs.release_version) || '' }}
+
+      - name: Create GitHub Release
+        # Only fires on `v*` tag pushes. Other triggers skip cleanly.
+        if: startsWith(github.ref, 'refs/tags/v')
+        # Pinned to the floating major `v2` tag. softprops/action-gh-release
+        # publishes both `v2` and `v3` floating major tags (verified via the
+        # GitHub Releases + tags API). We stay on `v2` deliberately: `v3.0.0`
+        # bumps the Action runtime to Node 24, which works on ubuntu-latest
+        # today but reduces compatibility headroom across the rest of the
+        # Action ecosystem (most still target Node 20). Revisit when Node 24
+        # is the dominant runtime baseline.
+        uses: softprops/action-gh-release@v2
+        with:
+          # `name` defaults to the tag, which is what we want. Body is auto-
+          # generated from PR/commit deltas since the previous tag via the
+          # GitHub release-notes API (no template file needed for now).
+          generate_release_notes: true
+          draft: false
+          # We do not yet differentiate prerelease tags (e.g. `v1.0.0-rc1`).
+          # When we do, set prerelease conditionally from a shell step that
+          # inspects the tag suffix and writes to $GITHUB_OUTPUT.
+          prerelease: false
+
+  smoke-test:
+    name: Smoke test (boot + provider registration)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    # Read-only at the registry: we are pulling our own freshly-pushed image
+    # back down to assert the container actually boots and the SPI is wired.
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      IMAGE_REF: ${{ needs.build-and-push.outputs.image_ref_sha }}
+
+    steps:
+      - name: Log in to GitHub Container Registry (pull)
+        # Even though GITHUB_TOKEN has `packages: read` on this job, docker
+        # still needs a credentials helper entry to pull from ghcr.io for
+        # private packages. For public packages this is a no-op; keeping the
+        # step makes the workflow forward-compatible if the package is later
+        # set private.
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image (linux/amd64)
+        run: |
+          set -euo pipefail
+          echo "Pulling ${IMAGE_REF} (linux/amd64)"
+          # Multi-arch manifest -- explicitly request amd64 to avoid the
+          # runner accidentally fetching an arm64 layer it can't execute.
+          docker pull --platform linux/amd64 "${IMAGE_REF}"
+
+      - name: Start container (start-dev, no DB)
+        # `start --optimized` requires a configured DB and hostname. For a
+        # boot smoke test we only need the server to come up and answer the
+        # admin API, so `start-dev` (which uses the in-memory dev DB and
+        # disables strict hostname checks) is the right call. The Dockerfile
+        # comment already calls this out as the smoke-testing path.
+        run: |
+          set -euo pipefail
+          docker run -d --name kc-smoke \
+            --platform linux/amd64 \
+            -p 8080:8080 \
+            -p 9000:9000 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            -e KC_HEALTH_ENABLED=true \
+            "${IMAGE_REF}" \
+            start-dev
+          echo "Container started:"
+          docker ps --filter name=kc-smoke
+
+      - name: Wait for /health/ready (max 120s)
+        run: |
+          set -euo pipefail
+          # 9000 is Keycloak's management interface (KC_HTTP_MANAGEMENT_PORT).
+          # /health/ready returns 200 once Quarkus has finished augmentation
+          # and the realm bootstrap is complete. Earlier responses (503/404)
+          # are normal during boot.
+          for i in $(seq 1 60); do
+            if curl --silent --fail --output /dev/null \
+                 --max-time 5 http://localhost:9000/health/ready; then
+              echo "Keycloak ready after ${i} attempts (~$((i * 2))s)"
+              exit 0
+            fi
+            echo "Attempt ${i}/60: not ready yet, sleeping 2s"
+            sleep 2
+          done
+          echo "::error::Keycloak failed to reach /health/ready within 120s"
+          echo "----- docker ps -----"
+          docker ps -a
+          echo "----- container logs (tail 200) -----"
+          docker logs --tail 200 kc-smoke || true
+          exit 1
+
+      - name: Assert remember-me-authenticator provider is registered
+        # Critical assertion: the whole point of this image is the SPI plugin.
+        # Boot success alone doesn't prove it -- `kc.sh build` succeeded at
+        # image-build time, but a packaging regression could still ship the
+        # JAR without registering the factory. We hit the admin API to be
+        # sure.
+        run: |
+          set -euo pipefail
+
+          echo "Requesting admin token from master realm"
+          TOKEN_JSON="$(
+            curl --silent --fail --show-error --max-time 10 \
+              -X POST http://localhost:8080/realms/master/protocol/openid-connect/token \
+              -H 'Content-Type: application/x-www-form-urlencoded' \
+              -d 'grant_type=password' \
+              -d 'client_id=admin-cli' \
+              -d 'username=admin' \
+              -d 'password=admin'
+          )"
+          ACCESS_TOKEN="$(echo "${TOKEN_JSON}" | jq -r '.access_token')"
+          if [[ -z "${ACCESS_TOKEN}" || "${ACCESS_TOKEN}" == "null" ]]; then
+            echo "::error::Failed to obtain admin token. Response:"
+            echo "${TOKEN_JSON}"
+            exit 1
+          fi
+          echo "Admin token acquired (length=${#ACCESS_TOKEN})"
+
+          echo "Listing authenticator providers"
+          PROVIDERS_JSON="$(
+            curl --silent --fail --show-error --max-time 10 \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+              http://localhost:8080/admin/realms/master/authentication/authenticator-providers
+          )"
+
+          # Provider ID confirmed from
+          # src/src/main/java/.../RememberMeAuthenticatorFactory.java:
+          #     public static final String PROVIDER_ID = "remember-me-authenticator";
+          if echo "${PROVIDERS_JSON}" | jq -e '.[] | select(.id == "remember-me-authenticator")' >/dev/null; then
+            echo "OK: remember-me-authenticator provider is registered:"
+            echo "${PROVIDERS_JSON}" | jq '.[] | select(.id == "remember-me-authenticator")'
+          else
+            echo "::error::remember-me-authenticator NOT found in authenticator-providers response."
+            echo "Full provider list:"
+            echo "${PROVIDERS_JSON}" | jq '.[].id' || echo "${PROVIDERS_JSON}"
+            exit 1
+          fi
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "----- docker logs kc-smoke -----"
+          docker logs kc-smoke || true
+
+      - name: Stop and remove container
+        if: always()
+        run: |
+          docker stop kc-smoke || true
+          docker rm   kc-smoke || true
+
+  integration-test:
+    name: Integration tests (Testcontainers)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    # Pull-only on the registry; Failsafe runs against the freshly-pushed
+    # image via Testcontainers, which talks to the runner's Docker daemon
+    # using whatever credentials the docker/login-action step deposited.
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      # The pom-level Failsafe configuration is expected to read this system
+      # property and pass it to Testcontainers' `GenericContainer(...)` ctor.
+      # Owned by the other agent's pom.xml + *IT.java changes -- we just
+      # surface the value here.
+      KC_IMAGE: ${{ needs.build-and-push.outputs.image_ref_sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 with Maven cache
+        # Pinned to the floating major `v4` tag (verified to exist via the
+        # GitHub git/refs API). actions/setup-java publishes both `v4` and
+        # the now-current `v5` as floating major tags; we stay on `v4` to
+        # match what the rest of the ecosystem currently treats as stable.
+        # The `cache: maven` flag wires the built-in cache around ~/.m2 keyed
+        # on the workspace's pom.xml hash -- it auto-discovers our
+        # `src/pom.xml`.
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Log in to GitHub Container Registry (pull)
+        # Testcontainers shells out to the host Docker daemon to pull our
+        # image. The daemon uses /home/runner/.docker/config.json for auth,
+        # which docker/login-action populates. Required even for public
+        # packages on rate-limited windows, and necessary if the package
+        # later flips to private.
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run integration tests (Maven verify)
+        # `-pl src` scopes Reactor to the plugin module (the only module).
+        # `-B -ntp` is non-interactive batch + no transfer progress, the
+        # standard CI duo. The `image.ref` system property is the agreed
+        # handshake with the *IT.java tests: they read it via
+        # System.getProperty and feed it into Testcontainers.
+        run: |
+          set -euo pipefail
+          echo "Running integration tests against image: ${KC_IMAGE}"
+          mvn -B -ntp -pl src verify -Dimage.ref="${KC_IMAGE}"
+
+      - name: Upload Failsafe reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failsafe-reports
+          path: |
+            src/target/failsafe-reports/
+            src/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7
