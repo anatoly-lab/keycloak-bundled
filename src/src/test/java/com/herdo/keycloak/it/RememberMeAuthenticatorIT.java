@@ -355,10 +355,16 @@ class RememberMeAuthenticatorIT {
         String idpAuthUrl = spAuthRedirect.getHeader("Location");
         assertThat(idpAuthUrl)
                 .withFailMessage(
-                        "Expected SP /auth (with kc_idp_hint=%s) to 302 the browser to the "
-                                + "upstream IdP's /auth endpoint, got null Location. Status was %d. "
-                                + "Body excerpt: %s",
-                        IDP_ALIAS, spAuthRedirect.statusCode(), bodyExcerpt(spAuthRedirect))
+                        "Expected SP /auth (with kc_idp_hint=%s) to redirect (302/303) "
+                                + "the browser to the upstream IdP's /auth endpoint. "
+                                + "Status was %d, Location was %s.%n"
+                                + "=== All response headers ===%n%s%n"
+                                + "=== Body (first %d chars) ===%n%s%n"
+                                + "=== Keycloak container logs (last %d chars) ===%n%s%n",
+                        IDP_ALIAS, spAuthRedirect.statusCode(), idpAuthUrl,
+                        spAuthRedirect.getHeaders().toString(),
+                        BODY_EXCERPT_LENGTH, bodyExcerpt(spAuthRedirect),
+                        CONTAINER_LOG_TAIL_CHARS, tailLogs(KEYCLOAK, CONTAINER_LOG_TAIL_CHARS))
                 .contains("/realms/" + IDP_REALM + "/protocol/openid-connect/auth");
 
         // --- Hop 2: GET the IdP /auth -> 200 with login form -----------
