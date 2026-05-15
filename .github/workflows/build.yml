@@ -406,22 +406,49 @@ jobs:
           echo "Pulling ${IMAGE_REF} (linux/amd64)"
           docker pull --platform linux/amd64 "${IMAGE_REF}"
 
+      - name: Generate ephemeral self-signed TLS cert
+        # `start --optimized` refuses to boot with HTTPS disabled and no TLS
+        # material. We can't bake `--http-enabled=true` into the image because
+        # the production Operator deployment runs HTTPS-internal (its "build
+        # time options differ" warning only flagged db/health/metrics, NOT
+        # http-enabled -- so http-enabled=false already matches production).
+        # Generate a throwaway cert here instead; this mirrors what the
+        # Operator's TLS secret provides at runtime.
+        # Mode 644 because the Keycloak container runs as uid 1000 and needs
+        # to read both files; a test cert key has no real secrecy value.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/kc-tls
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout /tmp/kc-tls/tls.key \
+            -out /tmp/kc-tls/tls.crt \
+            -subj "/CN=localhost"
+          chmod 644 /tmp/kc-tls/tls.key /tmp/kc-tls/tls.crt
+          ls -l /tmp/kc-tls/
+
       - name: Start container (start --optimized)
         # --network host so the kc container can reach the postgres service on
         # 127.0.0.1:5432 (services are bound to the runner host's network).
         # No -p flags needed: host networking exposes container ports directly.
         # KC_HOSTNAME_STRICT=false because we're booting under an arbitrary
         # localhost address; the Operator deployment sets a real hostname.
+        # KC_HTTPS_CERTIFICATE_FILE / _KEY_FILE point at the throwaway cert
+        # generated above. These are runtime options (not build-time), so
+        # setting them here doesn't constitute the contract this test is
+        # designed to catch.
         run: |
           set -euo pipefail
           docker run -d --name kc-opt \
             --platform linux/amd64 \
             --network host \
+            -v /tmp/kc-tls:/etc/x509/https:ro \
             -e KC_DB_URL_HOST=127.0.0.1 \
             -e KC_DB_URL_DATABASE=keycloak \
             -e KC_DB_USERNAME=keycloak \
             -e KC_DB_PASSWORD=kcpass \
             -e KC_HOSTNAME_STRICT=false \
+            -e KC_HTTPS_CERTIFICATE_FILE=/etc/x509/https/tls.crt \
+            -e KC_HTTPS_CERTIFICATE_KEY_FILE=/etc/x509/https/tls.key \
             -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
             -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
             "${IMAGE_REF}" \
