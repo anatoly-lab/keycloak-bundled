@@ -443,26 +443,42 @@ class RememberMeAuthenticatorIT {
         Response brokerCallbackResult = followBrokerCallback(
                 brokerCallbackUrl, spAuthRedirect.getDetailedCookies());
 
-        assertThat(brokerCallbackResult.statusCode())
+        // For a fresh IdP user, Keycloak's default first-broker-login flow
+        // intercepts here with a 302 to /login-actions/first-broker-login.
+        // With trustEmail=true and a complete IdP user profile (email,
+        // firstName, lastName all set), the "Create User If Unique"
+        // ALTERNATIVE auto-completes when we GET that URL -> 302 final.
+        // If the broker callback already returned the final redirect (no
+        // interception), skip this extra hop.
+        Response finalRedirect = brokerCallbackResult;
+        String firstBrokerLocation = brokerCallbackResult.getHeader("Location");
+        if (firstBrokerLocation != null && firstBrokerLocation.contains("/login-actions/first-broker-login")) {
+            finalRedirect = given()
+                    .redirects().follow(false)
+                    .urlEncodingEnabled(false)
+                    .cookies(brokerCallbackResult.getDetailedCookies())
+                    .when()
+                    .get(stripToPathAndQuery(firstBrokerLocation));
+        }
+
+        assertThat(finalRedirect.statusCode())
                 .withFailMessage(
-                        "Expected broker callback to redirect (302/303) the browser back to %s with an OIDC "
-                                + "code, got %d. If 200 with HTML, the SP realm probably surfaced "
-                                + "the first-broker-login review-profile page (which means the "
-                                + "default first-broker-login flow stopped to prompt the user). "
-                                + "Body excerpt: %s",
-                        SP_REDIRECT_URI, brokerCallbackResult.statusCode(),
-                        bodyExcerpt(brokerCallbackResult))
+                        "Expected final broker hop to redirect (302/303) the browser back to %s with an OIDC "
+                                + "code, got %d. If 200 with HTML, first-broker-login likely needed a prompt "
+                                + "(check trustEmail + IdP user profile completeness). Body excerpt: %s",
+                        SP_REDIRECT_URI, finalRedirect.statusCode(),
+                        bodyExcerpt(finalRedirect))
                 .isIn(302, 303);
-        assertThat(brokerCallbackResult.getHeader("Location"))
+        assertThat(finalRedirect.getHeader("Location"))
                 .withFailMessage(
-                        "Broker callback final 302 Location must redirect to %s with an OIDC code, was: %s",
-                        SP_REDIRECT_URI, brokerCallbackResult.getHeader("Location"))
+                        "Final 302 Location must redirect to %s with an OIDC code, was: %s",
+                        SP_REDIRECT_URI, finalRedirect.getHeader("Location"))
                 .startsWith(SP_REDIRECT_URI)
                 .contains("code=")
                 .contains("state=idp-test-state");
 
         // --- Cookie assertion: SAME assertion as the direct-login test --
-        Cookie identity = brokerCallbackResult.getDetailedCookies().get("KEYCLOAK_IDENTITY");
+        Cookie identity = finalRedirect.getDetailedCookies().get("KEYCLOAK_IDENTITY");
         assertThat(identity)
                 .withFailMessage(
                         "Broker callback's final 302 must Set-Cookie KEYCLOAK_IDENTITY on the SP realm. "
