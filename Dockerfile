@@ -67,7 +67,18 @@ COPY --from=builder /build/target/keycloak-remember-me-authenticator.jar \
 
 # Re-augment. Producing an "optimized" image per Keycloak's containers guide:
 # https://www.keycloak.org/server/containers
-RUN /opt/keycloak/bin/kc.sh build
+#
+# Build-time options baked here MUST match the runtime env vars set by the
+# consuming deployment (Keycloak Operator sets KC_DB, KC_HEALTH_ENABLED,
+# KC_METRICS_ENABLED). Mismatch makes `start --optimized` exit with a
+# "build time options that differ from what is persisted" warning instead
+# of starting -- the failure mode that motivated baking these in (v1.0.2).
+# Per Keycloak's contract, matching values are silently ignored at runtime;
+# only divergent values trip the error. To change any of these, rebuild.
+RUN /opt/keycloak/bin/kc.sh build \
+    --db=postgres \
+    --health-enabled=true \
+    --metrics-enabled=true
 
 
 # ---- Stage 3: Runtime -------------------------------------------------------
