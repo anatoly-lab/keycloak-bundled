@@ -378,6 +378,14 @@ class RememberMeAuthenticatorIT {
         //              from Hop 1 so the in-progress auth session is found.
         Response brokerLoginRedirect = given()
                 .redirects().follow(false)
+                // urlEncodingEnabled(false): the path+query string returned by
+                // stripToPathAndQuery() is ALREADY URL-encoded (it came from a
+                // Location header). REST Assured's default behavior parses the
+                // query string and re-encodes each value, double-encoding e.g.
+                // %3A -> %253A. That mangles redirect_uri inside the query and
+                // ultimately produces a malformed Location header from Keycloak
+                // a few hops later. Tell REST Assured to leave the URL alone.
+                .urlEncodingEnabled(false)
                 .cookies(spAuthRedirect.getDetailedCookies())
                 .when()
                 .get(stripToPathAndQuery(brokerLoginUrl));
@@ -948,52 +956,21 @@ class RememberMeAuthenticatorIT {
     private static void createIdpBrokerClient(String adminToken) {
         String brokerCallback = keycloakBaseUrl()
                 + "/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/endpoint";
-        // Path-suffix wildcard form. Trailing "*" engages Keycloak's
-        // prefix-match branch in RedirectUtils#matchesRedirects (Keycloak
-        // 26.5.7), which returns the stripped prefix as the match — NOT
-        // the literal "*" — so OIDCRedirectUriBuilder builds a proper
-        // Location URL on the response side.
-        String brokerCallbackWildcard = keycloakBaseUrl()
-                + "/realms/" + SP_REALM + "/broker/" + IDP_ALIAS + "/*";
-        // Universal wildcard as a last-resort fallback. RedirectUtils
-        // 26.5.7 sorts validRedirects by LENGTH DESCENDING, so "*" is
-        // tried LAST — only if neither the exact callback URL nor the
-        // path-suffix wildcard matches. Per source review of
-        // verifyRedirectUri, when "*" matches, the method still returns
-        // the ORIGINAL incoming redirectUri (not the literal "*"), so
-        // downstream Location-building is unaffected. We were unable to
-        // explain a prior CI failure where both the exact URL and the
-        // path-suffix wildcard were registered and reportedly byte-identical
-        // to the redirect_uri Keycloak sent — yet the matcher still rejected
-        // it. The defensive "*" entry guarantees we don't get blocked on a
-        // canonicalisation mismatch invisible to our diagnostics. This is
-        // an IdP-realm broker client used purely server-to-server inside the
-        // test container — there's no security implication from "*" here.
-        String brokerCallbackUniversal = "*";
-        // Diagnostic: emit the exact registered strings so the next CI failure
-        // can compare them byte-for-byte against the redirect_uri Keycloak sends.
+        // Diagnostic: emit the exact registered string so a future CI failure
+        // can compare it byte-for-byte against the redirect_uri Keycloak sends.
+        // (Earlier iterations failed because the test was double-URL-encoding
+        // the redirect_uri before sending; once that was fixed at the call
+        // sites the exact-URL match here is sufficient.)
         System.out.println("[TEST] keycloakBaseUrl() = " + keycloakBaseUrl());
-        System.out.println("[TEST] Registering rmtest-broker-client redirectUris = "
-                + brokerCallback + " , " + brokerCallbackWildcard + " , "
-                + brokerCallbackUniversal);
+        System.out.println("[TEST] Registering rmtest-broker-client redirectUris = " + brokerCallback);
 
-        // Map.of capped at 10 pairs; using HashMap so we can also set
-        // webOrigins and attributes if needed without touching the limit.
-        // webOrigins is a defensive add: some Keycloak versions reject
-        // browser-flow OIDC clients without a webOrigins entry, even
-        // though our flow here is server-to-server (the SP-side IdP
-        // broker doing the token exchange). Setting it to ["*"] matches
-        // the Keycloak admin-UI default behaviour when redirectUris contain
-        // a wildcard.
         Map<String, Object> brokerClientRep = new HashMap<>();
         brokerClientRep.put("clientId", IDP_BROKER_CLIENT);
         brokerClientRep.put("enabled", true);
         brokerClientRep.put("publicClient", false);
         brokerClientRep.put("secret", IDP_BROKER_CLIENT_SECRET);
         brokerClientRep.put("standardFlowEnabled", true);
-        brokerClientRep.put("redirectUris",
-                List.of(brokerCallback, brokerCallbackWildcard, brokerCallbackUniversal));
-        brokerClientRep.put("webOrigins", List.of("*"));
+        brokerClientRep.put("redirectUris", List.of(brokerCallback));
 
         given()
                 .header("Authorization", "Bearer " + adminToken)
@@ -1284,6 +1261,9 @@ class RememberMeAuthenticatorIT {
         String relative = stripToPathAndQuery(idpAuthUrl);
         Response response = given()
                 .redirects().follow(false)
+                // .get(relative) parses the path+query and would re-encode the
+                // already-encoded query values (see comment in Hop 1.5 above).
+                .urlEncodingEnabled(false)
                 .when()
                 .get(relative);
 
@@ -1319,6 +1299,8 @@ class RememberMeAuthenticatorIT {
         String relative = stripToPathAndQuery(brokerCallbackUrl);
         return given()
                 .redirects().follow(false)
+                // Same already-encoded URL reason as the other follow helpers.
+                .urlEncodingEnabled(false)
                 .cookies(spCookies)
                 .when()
                 .get(relative);
