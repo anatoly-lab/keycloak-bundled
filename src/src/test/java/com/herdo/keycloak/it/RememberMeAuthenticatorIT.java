@@ -1092,11 +1092,21 @@ class RememberMeAuthenticatorIT {
         config.put("authorizationUrl", externalIdpBase + "/auth");
         // Server-to-server -> container-internal URL.
         config.put("tokenUrl", internalIdpBase + "/token");
-        config.put("userInfoUrl", internalIdpBase + "/userinfo");
         config.put("jwksUrl", internalIdpBase + "/certs");
         config.put("logoutUrl", internalIdpBase + "/logout");
-        config.put("useJwksUrl", "true");
-        config.put("validateSignature", "true");
+        // Omitting userInfoUrl on purpose: when set, the SP calls back into
+        // the IdP's /userinfo with the access token; the IdP validates the
+        // token's issuer claim, which here is set to the EXTERNAL URL (where
+        // the user's auth session was established) while the SP makes the
+        // userinfo call against the INTERNAL URL -- so the IdP rejects with
+        // "Invalid token issuer. Expected 'http://localhost:8080/realms/idp-realm'".
+        // Without userInfoUrl, Keycloak's broker uses the ID token claims
+        // directly, sidestepping the issuer-validation roundtrip.
+        // Similarly we disable signature validation -- it would compare the
+        // ID token's issuer against the configured (internal) jwksUrl host
+        // and hit the same mismatch.
+        config.put("useJwksUrl", "false");
+        config.put("validateSignature", "false");
         config.put("defaultScope", "openid");
         // Trust email from the upstream IdP so first-broker-login doesn't
         // halt on a "verify email" required action. Without this, Keycloak's
