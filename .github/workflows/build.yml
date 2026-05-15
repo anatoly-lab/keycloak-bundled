@@ -460,11 +460,19 @@ jobs:
         # Longer timeout than the start-dev smoke (120s) because `start
         # --optimized` doesn't get to skip the realm bootstrap on first boot
         # against a fresh Postgres, and DB migration adds a few seconds.
+        #
+        # HTTPS + `-k`: Keycloak auto-derives the management-interface
+        # protocol from the main listener's TLS config. Once KC_HTTPS_*
+        # files are present, both 8443 (main) and 9000 (management) come up
+        # as HTTPS using the same cert. The cert is self-signed (CN=localhost,
+        # generated in the previous step), so `-k` is needed to skip
+        # verification. This mirrors the start-up log:
+        #   "Management interface listening on https://0.0.0.0:9000."
         run: |
           set -euo pipefail
           for i in $(seq 1 90); do
-            if curl --silent --fail --output /dev/null \
-                 --max-time 5 http://localhost:9000/health/ready; then
+            if curl --silent --fail -k --output /dev/null \
+                 --max-time 5 https://localhost:9000/health/ready; then
               echo "Keycloak (optimized) ready after ${i} attempts (~$((i * 2))s)"
               exit 0
             fi
