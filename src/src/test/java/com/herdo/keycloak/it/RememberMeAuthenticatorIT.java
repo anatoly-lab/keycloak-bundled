@@ -443,34 +443,49 @@ class RememberMeAuthenticatorIT {
         Response brokerCallbackResult = followBrokerCallback(
                 brokerCallbackUrl, spAuthRedirect.getDetailedCookies());
 
-        // For a fresh IdP user, Keycloak's default first-broker-login flow
-        // intercepts here with a 302 to /login-actions/first-broker-login.
-        // With trustEmail=true and a complete IdP user profile (email,
-        // firstName, lastName all set), the "Create User If Unique"
-        // ALTERNATIVE auto-completes when we GET that URL -> 302 final.
-        // If the broker callback already returned the final redirect (no
-        // interception), skip this extra hop.
+        // Post-broker-callback, Keycloak may insert one OR MORE intermediate
+        // SP-internal redirects (/login-actions/first-broker-login, then
+        // /broker/after-first-broker-login, etc.) before emitting the final
+        // 302 to the SP client's redirect_uri. Each hop accumulates session
+        // cookies that the NEXT hop expects. We loop, merging cookies across
+        // every step, until either:
+        //   * Location no longer starts with the SP base URL (= final
+        //     redirect to the client's redirect_uri) -- success path
+        //   * Status is not a redirect (200 + HTML = stuck on a prompt,
+        //     or 4xx = misconfig) -- the loop exits and the next assertion
+        //     catches it
+        //   * Iteration cap reached (defensive bail against infinite loops)
         Response finalRedirect = brokerCallbackResult;
-        String firstBrokerLocation = brokerCallbackResult.getHeader("Location");
-        if (firstBrokerLocation != null && firstBrokerLocation.contains("/login-actions/first-broker-login")) {
-            // Merge SP-side cookies across both prior responses. KC_RESTART
-            // was set on Hop 1's spAuthRedirect; the broker callback may
-            // refresh AUTH_SESSION_ID or similar on its own response. We
-            // need BOTH carried forward, otherwise first-broker-login
-            // returns 400 "Restart login cookie not found".
-            Map<String, String> merged = new HashMap<>();
-            for (Cookie c : spAuthRedirect.getDetailedCookies()) {
-                merged.put(c.getName(), c.getValue());
+        Map<String, String> mergedCookies = new HashMap<>();
+        for (Cookie c : spAuthRedirect.getDetailedCookies()) {
+            mergedCookies.put(c.getName(), c.getValue());
+        }
+        for (Cookie c : brokerCallbackResult.getDetailedCookies()) {
+            mergedCookies.put(c.getName(), c.getValue());
+        }
+        int maxIntermediateHops = 6;
+        while (maxIntermediateHops-- > 0) {
+            int status = finalRedirect.statusCode();
+            String location = finalRedirect.getHeader("Location");
+            if (status != 302 && status != 303) {
+                break;
             }
-            for (Cookie c : brokerCallbackResult.getDetailedCookies()) {
-                merged.put(c.getName(), c.getValue());
+            if (location == null || location.startsWith(SP_REDIRECT_URI)) {
+                break;
+            }
+            String spBase = keycloakBaseUrl();
+            if (!location.startsWith(spBase)) {
+                break;
             }
             finalRedirect = given()
                     .redirects().follow(false)
                     .urlEncodingEnabled(false)
-                    .cookies(merged)
+                    .cookies(mergedCookies)
                     .when()
-                    .get(stripToPathAndQuery(firstBrokerLocation));
+                    .get(stripToPathAndQuery(location));
+            for (Cookie c : finalRedirect.getDetailedCookies()) {
+                mergedCookies.put(c.getName(), c.getValue());
+            }
         }
 
         assertThat(finalRedirect.statusCode())
