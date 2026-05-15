@@ -453,10 +453,22 @@ class RememberMeAuthenticatorIT {
         Response finalRedirect = brokerCallbackResult;
         String firstBrokerLocation = brokerCallbackResult.getHeader("Location");
         if (firstBrokerLocation != null && firstBrokerLocation.contains("/login-actions/first-broker-login")) {
+            // Merge SP-side cookies across both prior responses. KC_RESTART
+            // was set on Hop 1's spAuthRedirect; the broker callback may
+            // refresh AUTH_SESSION_ID or similar on its own response. We
+            // need BOTH carried forward, otherwise first-broker-login
+            // returns 400 "Restart login cookie not found".
+            Map<String, String> merged = new HashMap<>();
+            for (Cookie c : spAuthRedirect.getDetailedCookies()) {
+                merged.put(c.getName(), c.getValue());
+            }
+            for (Cookie c : brokerCallbackResult.getDetailedCookies()) {
+                merged.put(c.getName(), c.getValue());
+            }
             finalRedirect = given()
                     .redirects().follow(false)
                     .urlEncodingEnabled(false)
-                    .cookies(brokerCallbackResult.getDetailedCookies())
+                    .cookies(merged)
                     .when()
                     .get(stripToPathAndQuery(firstBrokerLocation));
         }
