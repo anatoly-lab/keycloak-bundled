@@ -1074,15 +1074,27 @@ class RememberMeAuthenticatorIT {
      * runtime rather than requiring them inline.
      */
     private static void createIdentityProviderPointingAtIdpRealm(String adminToken) {
-        String idpBase = keycloakBaseUrl() + "/realms/" + IDP_REALM + "/protocol/openid-connect";
+        // Keycloak inside the container talks to its own /token, /userinfo,
+        // /certs endpoints via the container-internal address. Using the
+        // host's mapped port (keycloakBaseUrl()) here fails with
+        // "Connection refused" because that port doesn't exist from inside
+        // the container. authorizationUrl, by contrast, is browser-facing
+        // and must use the host's mapped port (so the test JVM following
+        // the redirect can reach it).
+        String externalIdpBase = keycloakBaseUrl()
+                + "/realms/" + IDP_REALM + "/protocol/openid-connect";
+        String internalIdpBase = "http://localhost:8080"
+                + "/realms/" + IDP_REALM + "/protocol/openid-connect";
         Map<String, String> config = new HashMap<>();
         config.put("clientId", IDP_BROKER_CLIENT);
         config.put("clientSecret", IDP_BROKER_CLIENT_SECRET);
-        config.put("authorizationUrl", idpBase + "/auth");
-        config.put("tokenUrl", idpBase + "/token");
-        config.put("userInfoUrl", idpBase + "/userinfo");
-        config.put("jwksUrl", idpBase + "/certs");
-        config.put("logoutUrl", idpBase + "/logout");
+        // Browser-facing -> external URL.
+        config.put("authorizationUrl", externalIdpBase + "/auth");
+        // Server-to-server -> container-internal URL.
+        config.put("tokenUrl", internalIdpBase + "/token");
+        config.put("userInfoUrl", internalIdpBase + "/userinfo");
+        config.put("jwksUrl", internalIdpBase + "/certs");
+        config.put("logoutUrl", internalIdpBase + "/logout");
         config.put("useJwksUrl", "true");
         config.put("validateSignature", "true");
         config.put("defaultScope", "openid");
