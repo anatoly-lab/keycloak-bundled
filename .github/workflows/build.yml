@@ -28,7 +28,7 @@ on:
       kc_version:
         description: 'Keycloak version (must match the Keycloak Operator version deployed by the consuming Kubernetes manifest)'
         required: false
-        default: '26.5.7'
+        default: '26.6.4'
       plugin_git_sha:
         description: 'Upstream Herdo/keycloak-remember-me-authenticator commit, for the OCI label'
         required: false
@@ -54,7 +54,7 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/keycloak-bundled
   # Fallback defaults for non-dispatch triggers. Keep in sync with the
   # workflow_dispatch input defaults above.
-  DEFAULT_KC_VERSION: '26.5.7'
+  DEFAULT_KC_VERSION: '26.6.4'
   DEFAULT_PLUGIN_GIT_SHA: 'de35b36'
 
 jobs:

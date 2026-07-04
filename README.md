@@ -25,7 +25,7 @@ No secrets live in this repo. The image is pushed to GHCR (GitHub Container Regi
 
 ```bash
 docker build \
-  --build-arg KC_VERSION=26.5.7 \
+  --build-arg KC_VERSION=26.6.4 \
   --build-arg PLUGIN_GIT_SHA=de35b36 \
   --build-arg VCS_REF=$(git rev-parse HEAD) \
   --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
@@ -38,7 +38,7 @@ Build args (all declared in the `Dockerfile`):
 
 | Arg | Default | Purpose |
 | --- | --- | --- |
-| `KC_VERSION` | `26.5.7` | Keycloak base image tag. Must match the Keycloak Operator version deployed by the consuming Kubernetes manifest. |
+| `KC_VERSION` | `26.6.4` | Keycloak base image tag. Must match the Keycloak Operator version deployed by the consuming Kubernetes manifest. |
 | `PLUGIN_GIT_SHA` | `de35b36` | Upstream Herdo commit, surfaced as an OCI label for traceability. |
 | `VCS_REF` | `local` | Git SHA of this repo. CI sets it; local builds may leave the default. |
 | `BUILD_DATE` | `unknown` | RFC3339 timestamp. CI sets it. |

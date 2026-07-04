@@ -51,7 +51,7 @@ keycloak-bundled/
 The work to land this image:
 
 1. **Vendor the plugin source** under `src/`. Clone Herdo's repo and copy the Java files, then:
-   - Update `pom.xml` to target the current Keycloak BOM (currently 26.5.7; see "Example consumer: AnkiMCP" below for the rationale behind this specific pin).
+   - Update `pom.xml` to target the current Keycloak BOM (currently 26.6.4; see "Example consumer: AnkiMCP" below for the rationale behind this specific pin).
    - Strip stale dependencies (upstream pom.xml issue #9).
    - Confirm it builds cleanly with Maven 3.9+.
    - Preserve the MIT license header and add a NOTICE/README crediting Herdo.
@@ -97,7 +97,7 @@ This image was originally built for the AnkiMCP platform and is consumed there t
 
 **Downstream repo:** `anki-mcp-infrastructure` → `apps/keycloak/templates/keycloak.yaml` sets the Keycloak CR's `spec.image` to a tag of this image. Realm configuration lives in `apps/keycloak/realm-ankimcp.json` and is reconciled by a `keycloak-config-cli` PostSync hook driven by ArgoCD.
 
-**Keycloak version currently deployed there:** `26.5.7`. This is held intentionally — `adorsys/keycloak-config-cli` has no `6.5.0-26.6.x` build yet, so the operator can't be bumped to 26.6+ until adorsys ships a compatible config-cli image. This repo tracks the same Keycloak version that consumer deploys.
+**Keycloak version this repo tracks:** `26.6.4`. The consumer's Keycloak Operator is bumped to `26.6.4` in lockstep (this image is published first, then the operator follows — see the coordination rule below). The earlier `26.5.7` hold — motivated by `adorsys/keycloak-config-cli` lacking a `6.5.0-26.6.x` build — no longer blocks the bump: config-cli stays pinned at its `6.5.1-26.5.5` tag and still reconciles the `26.6.4` server cleanly, because the consumer's realm JSON uses none of the 26.6-only realm fields (nothing to strip). This repo tracks the same Keycloak version the consumer deploys.
 
 **Version-bump coordination rule (for this consumer):** when Keycloak gets bumped in `anki-mcp-infrastructure` (Keycloak Operator bump → bundled server image bump), this image MUST be rebuilt against the new Keycloak version in lockstep. Otherwise the Keycloak StatefulSet (running new version) will fall out of sync with this custom image (containing the extension built against the old version). Recommended workflow: bump Keycloak here first, push the new image, then bump the operator in the infra repo. Other consumers should follow the same lockstep pattern against their own Operator version.
 

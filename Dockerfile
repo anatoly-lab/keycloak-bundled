@@ -13,7 +13,7 @@
 # Kubernetes manifest. Bump this repo and the consuming deployment in lockstep
 # (see CLAUDE.md: "Example consumer: AnkiMCP" for one concrete instance of this
 # coordination rule).
-ARG KC_VERSION=26.5.7
+ARG KC_VERSION=26.6.4
 # Upstream plugin commit (Herdo/keycloak-remember-me-authenticator). Surfaced
 # as an OCI label so a deployed image can be traced back to its source revision.
 ARG PLUGIN_GIT_SHA=de35b36
