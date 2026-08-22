@@ -27,8 +27,10 @@ SPI registration src/main/resources/META-INF/services/org.keycloak.authenticatio
     VERBATIM.
 
 pom.xml:
-    REWRITTEN against the Keycloak 26.5.7 parent BOM. Specifically:
-      - Imports org.keycloak:keycloak-parent:26.5.7 via <dependencyManagement>
+    REWRITTEN against the Keycloak parent BOM for the release this image
+    targets (see <version.keycloak> in pom.xml, driven by the KC_VERSION
+    build arg). Specifically:
+      - Imports org.keycloak:keycloak-parent:${version.keycloak} via <dependencyManagement>
         (per Keycloak 26.5 server-development docs).
       - Drops the upstream keycloak-services dependency: not referenced by
         any import in the Java sources.
