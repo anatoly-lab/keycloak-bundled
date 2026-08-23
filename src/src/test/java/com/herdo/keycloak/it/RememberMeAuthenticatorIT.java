@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * End-to-end integration tests for the bundled Keycloak image
- * ({@code ghcr.io/anatoly314/keycloak-bundled}).
+ * ({@code ghcr.io/anatoly-lab/keycloak-bundled}).
  *
  * Three assertions:
  *   1. {@link #keycloakBasicFunctionalityIntact()} — the augmented image still
@@ -47,9 +47,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * The image under test is supplied via the Maven system property
  * {@code image.ref}, whose value is a complete image reference
- * (registry/name:tag), e.g. {@code ghcr.io/anatoly314/keycloak-bundled:1.0.0}.
+ * (registry/name:tag), e.g. {@code ghcr.io/anatoly-lab/keycloak-bundled:1.0.0}.
  * CI passes the immutable SHA-tagged ref produced by the {@code build-and-push}
- * job's output. Falls back to {@code ghcr.io/anatoly314/keycloak-bundled:latest}
+ * job's output. Falls back to {@code ghcr.io/anatoly-lab/keycloak-bundled:latest}
  * for local developer runs.
  *
  * Keycloak {@code start-dev} bootstrap typically takes 30–60 s on a warm host;
@@ -61,7 +61,7 @@ class RememberMeAuthenticatorIT {
     // ---- container / image ------------------------------------------------
 
     private static final String PROVIDER_ID = "remember-me-authenticator";
-    private static final String IMAGE_REF = System.getProperty("image.ref", "ghcr.io/anatoly314/keycloak-bundled:latest");
+    private static final String IMAGE_REF = System.getProperty("image.ref", "ghcr.io/anatoly-lab/keycloak-bundled:latest");
 
     // ---- master-realm admin -----------------------------------------------
 
@@ -115,7 +115,7 @@ class RememberMeAuthenticatorIT {
      * {@link #IDP_REALM}. This alias becomes part of the broker callback URL
      * ({@code /realms/{SP_REALM}/broker/{IDP_ALIAS}/endpoint}, per
      * {@code IdentityBrokerService} {@code @Path("{provider_alias}/endpoint")}
-     * in Keycloak 26.5.7), which is also the {@code redirectUris} entry on
+     * as of the 26.5.7 source review), which is also the {@code redirectUris} entry on
      * the IdP-realm-side broker client.
      */
     private static final String IDP_ALIAS = "idp-via-keycloak";
@@ -173,7 +173,7 @@ class RememberMeAuthenticatorIT {
             // random host port, so any baked-in frontend URL would either be
             // ignored (legacy v1 option in 26) or cause issuer/redirect-URL
             // mismatches surfacing as 400 from /auth. Confirmed against
-            // Keycloak 26.5 docs (guides/server/hostname.adoc, hostname-v2):
+            // Keycloak's hostname docs (guides/server/hostname.adoc, hostname-v2):
             // "If the port is not part of the URL, it is dynamically resolved
             // from the incoming request headers."
             // start-dev avoids the full DB requirement; sufficient for behavioural tests.
@@ -640,8 +640,8 @@ class RememberMeAuthenticatorIT {
      * form), which is the "post-authentication" placement called out in
      * CLAUDE.md.
      *
-     * <p><b>Sub-flow alias source-of-truth.</b> Per Keycloak 26.5 source
-     * ({@code AuthenticationManagementResource#recurseExecutions}), the
+     * <p><b>Sub-flow alias source-of-truth.</b> Per the Keycloak 26.5 source
+     * review ({@code AuthenticationManagementResource#recurseExecutions}), the
      * {@code AuthenticationExecutionInfoRepresentation} returned by GET
      * /executions exposes a sub-flow's alias via the {@code displayName}
      * field (the rep has no {@code subFlowAlias} / {@code flowAlias} field —
@@ -956,7 +956,7 @@ class RememberMeAuthenticatorIT {
      * Code Flow (Hop 3 -> Hop 4 in the test). The {@code redirectUris} entries
      * cover the broker callback URL on the SP side, per
      * {@code IdentityBrokerService#getEndpoint} ({@code @Path("{provider_alias}/endpoint")})
-     * in Keycloak 26.5.7 — i.e. {@code /realms/{SP_REALM}/broker/{IDP_ALIAS}/endpoint}.
+     * as of the 26.5.7 source review — i.e. {@code /realms/{SP_REALM}/broker/{IDP_ALIAS}/endpoint}.
      *
      * <p><b>Why a path-suffix wildcard rather than literal {@code "*"} or a
      * single exact URL.</b> Reading
@@ -1112,7 +1112,7 @@ class RememberMeAuthenticatorIT {
      * ({@code authorizationUrl}, {@code tokenUrl}, {@code userInfoUrl},
      * {@code clientId}, {@code clientSecret}, {@code defaultScope}) and
      * {@code OIDCIdentityProviderConfig} ({@code jwksUrl}, {@code useJwksUrl},
-     * {@code logoutUrl}) in Keycloak 26.5.7. {@code useJwksUrl=true} +
+     * {@code logoutUrl}) as of the 26.5.7 source review. {@code useJwksUrl=true} +
      * {@code jwksUrl} lets the SP fetch the IdP realm's signing keys at
      * runtime rather than requiring them inline.
      */
@@ -1284,7 +1284,7 @@ class RememberMeAuthenticatorIT {
      * Hop 1 of the IdP-brokered login. GETs the SP realm's /auth endpoint
      * with {@code kc_idp_hint=IDP_ALIAS} so Keycloak's identity-provider
      * redirector triggers IMMEDIATELY without rendering the SP login form
-     * (Keycloak 26.5 server-admin guide, "Client-suggested Identity Provider":
+     * (Keycloak's server-admin guide, "Client-suggested Identity Provider":
      * "OIDC applications can bypass the login page by hinting at the identity
      * provider via the {@code kc_idp_hint} query parameter on the
      * authorization endpoint"). Returns the raw 302 response — caller picks

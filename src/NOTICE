@@ -31,7 +31,7 @@ pom.xml:
     targets (see <version.keycloak> in pom.xml, driven by the KC_VERSION
     build arg). Specifically:
       - Imports org.keycloak:keycloak-parent:${version.keycloak} via <dependencyManagement>
-        (per Keycloak 26.5 server-development docs).
+        (per Keycloak's server-development docs).
       - Drops the upstream keycloak-services dependency: not referenced by
         any import in the Java sources.
       - Drops the upstream <distributionManagement> block: we don't publish

@@ -29,7 +29,7 @@
     <dependencyManagement>
         <dependencies>
             <!--
-                Keycloak parent BOM. Per Keycloak 26.5 server-development docs
+                Keycloak parent BOM. Per Keycloak's server-development docs
                 (docs/documentation/server_development/topics/providers.adoc),
                 importing keycloak-parent aligns all org.keycloak:* artifact versions
                 with the targeted Keycloak release.
