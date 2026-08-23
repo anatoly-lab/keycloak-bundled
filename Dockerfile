@@ -62,7 +62,7 @@ FROM quay.io/keycloak/keycloak:${KC_VERSION} AS kcbuild
 
 # Drop the JAR into the providers directory. `kc.sh build` discovers and bakes
 # providers from this path during Quarkus augmentation.
-COPY --from=builder /build/target/keycloak-remember-me-authenticator.jar \
+COPY --from=builder --chown=1000:0 /build/target/keycloak-remember-me-authenticator.jar \
                     /opt/keycloak/providers/
 
 # Re-augment. Producing an "optimized" image per Keycloak's containers guide:
@@ -75,10 +75,18 @@ COPY --from=builder /build/target/keycloak-remember-me-authenticator.jar \
 # of starting -- the failure mode that motivated baking these in (v1.0.2).
 # Per Keycloak's contract, matching values are silently ignored at runtime;
 # only divergent values trip the error. To change any of these, rebuild.
+# `--features` is also a build-time option, same contract: under
+# `--optimized`, a `spec.features.enabled`/KC_FEATURES value matching what's
+# baked here is accepted; a divergent one trips the same "build time options
+# differ" failure as db/health/metrics above. `cimd` (OAuth Client ID
+# Metadata Document, required for MCP 2025-11-25+ authorization servers) is
+# baked in here, so the consuming Keycloak CR may declare
+# `spec.features.enabled: [cimd]` but must not declare a different set.
 RUN /opt/keycloak/bin/kc.sh build \
     --db=postgres \
     --health-enabled=true \
-    --metrics-enabled=true
+    --metrics-enabled=true \
+    --features=cimd
 
 
 # ---- Stage 3: Runtime -------------------------------------------------------

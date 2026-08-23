@@ -1,0 +1,30 @@
+---
+# Keeps CI actions and build dependencies patched. The Keycloak base image
+# itself is NOT tracked here -- its `FROM` is ARG-interpolated
+# (quay.io/keycloak/keycloak:${KC_VERSION}) so Dependabot can't see a literal
+# tag to bump, and it must be bumped manually in lockstep with the consuming
+# Keycloak Operator version anyway (see CLAUDE.md: "Example consumer:
+# AnkiMCP"). The `docker` ecosystem below only picks up the Maven builder
+# stage's pinned `FROM maven:...` tag.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: maven
+    directory: /src
+    schedule:
+      interval: weekly
+    ignore:
+      # Keycloak BOM is bumped manually in lockstep with KC_VERSION; see CLAUDE.md.
+      - dependency-name: "org.keycloak:*"

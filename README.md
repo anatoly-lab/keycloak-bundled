@@ -10,7 +10,7 @@ Keycloak's built-in "Remember Me" checkbox lives on the username/password form. 
 
 - `quay.io/keycloak/keycloak:<KC_VERSION>` as the base.
 - A vendored build of [Herdo/keycloak-remember-me-authenticator](https://github.com/Herdo/keycloak-remember-me-authenticator), rebuilt against the matching Keycloak BOM and dropped into `/opt/keycloak/providers/`.
-- An "optimized" server: `kc.sh build` runs at image-build time so Quarkus augmentation is already done on container start.
+- An "optimized" server: `kc.sh build` runs at image-build time so Quarkus augmentation is already done on container start. This also bakes `--features=cimd` (OAuth Client ID Metadata Document, experimental, needed for MCP ≥2025-11-25); consumers must not set a divergent `KC_FEATURES` at runtime.
 
 No secrets live in this repo. The image is pushed to GHCR (GitHub Container Registry) using the workflow's auto-provisioned `${{ secrets.GITHUB_TOKEN }}` and `${{ github.actor }}` — no PAT, robot account, or repo-level secret is configured.
 

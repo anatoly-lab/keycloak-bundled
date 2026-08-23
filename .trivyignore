@@ -1,0 +1,9 @@
+# Reviewable, expiring exceptions for the CI vulnerability gate. One CVE per
+# line, each with: why it is a false positive or not applicable, and a
+# re-check date.
+
+# CVE-2025-59250 — com.microsoft.sqlserver:mssql-jdbc, bundled by upstream Keycloak.
+# Installed 13.2.1.jre11 IS the fixed version; trivy mis-parses the ".jre11"
+# qualifier and reports it as 13.2.1 < 13.2.1.jre11. Driver is never loaded
+# (image is built with --db=postgres). Re-check on next KC bump (added 2026-08-23).
+CVE-2025-59250
