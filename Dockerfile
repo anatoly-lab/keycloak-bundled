@@ -27,7 +27,7 @@ ARG PLUGIN_GIT_SHA=de35b36
 # level is enough here (Maven re-resolves all deps from Central anyway, so a
 # JDK micro-bump can't change the resulting JAR), and digest pinning would
 # require lockstep updates with every base-image security refresh.
-FROM maven:3.9.15-eclipse-temurin-21 AS builder
+FROM maven:3.9.15-eclipse-temurin-26 AS builder
 
 WORKDIR /build
 
