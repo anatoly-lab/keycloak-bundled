@@ -10,7 +10,7 @@ Keycloak's built-in "Remember Me" checkbox lives on the username/password form. 
 
 - `quay.io/keycloak/keycloak:<KC_VERSION>` as the base.
 - A vendored build of [Herdo/keycloak-remember-me-authenticator](https://github.com/Herdo/keycloak-remember-me-authenticator), rebuilt against the matching Keycloak BOM and dropped into `/opt/keycloak/providers/`.
-- An "optimized" server: `kc.sh build` runs at image-build time so Quarkus augmentation is already done on container start. This also bakes `--features=cimd` (OAuth Client ID Metadata Document, experimental, needed for MCP ≥2025-11-25); consumers must not set a divergent `KC_FEATURES` at runtime.
+- An "optimized" server: `kc.sh build` runs at image-build time so Quarkus augmentation is already done on container start.
 
 No secrets live in this repo. The image is pushed to GHCR (GitHub Container Registry) using the workflow's auto-provisioned `${{ secrets.GITHUB_TOKEN }}` and `${{ github.actor }}` — no PAT, robot account, or repo-level secret is configured.
 
@@ -67,6 +67,8 @@ Note: `kc.sh start-dev` re-augments the Quarkus image at boot, which bypasses th
 - `ghcr.io/<owner>/keycloak-bundled:latest` — moving pointer to the most recent build.
 
 GHCR push uses the workflow's auto-provisioned `${{ secrets.GITHUB_TOKEN }}` plus `${{ github.actor }}` for auth (the workflow declares `permissions.packages: write`). No PAT or repo-level secret needs to be configured.
+
+`.github/workflows/scan.yml` runs nightly (and on manual `workflow_dispatch`) to re-scan the already-published `:latest` and newest release tags for newly-disclosed CVEs, since the build-time scan only catches what's known at release time. A red run there means a HIGH/CRITICAL was found post-release — check the Security tab.
 
 ## Downstream coordination
 

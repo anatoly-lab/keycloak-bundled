@@ -44,12 +44,17 @@ permissions:
   contents: read
   packages: write
 
-# Cancel in-progress builds on main when a newer push lands (saves CI minutes
-# on rapid-succession merges). Do NOT cancel tag builds -- a v* tag push is a
-# release artifact and must complete even if main is moving.
+# Keyed on the commit SHA (not github.ref) so a `v*` tag push and the `main`
+# push that produced the same commit share one group -- otherwise both runs'
+# build-and-push jobs race to write the same "immutable" tags and the last
+# writer wins, which can leave `release` promoting the *other* run's digest.
+# The second run waits (cancel-in-progress: false for non-PR events) rather
+# than getting cancelled, since a tag-push release run must still complete.
+# Different commits still get different groups, so this doesn't serialize
+# unrelated builds. PRs keep the previous cancel-on-superseding-push behavior.
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -107,6 +112,13 @@ jobs:
       kc_version: ${{ steps.meta.outputs.kc_version }}
       plugin_git_sha: ${{ steps.meta.outputs.plugin_git_sha }}
       release_version: ${{ steps.meta.outputs.release_version }}
+      # The pushed index digest for this commit's build, resolved either from
+      # this run's own push (steps.push.outputs.digest) or, if a same-commit
+      # run already wrote the immutable tag first, from that existing tag
+      # (steps.check-existing.outputs.digest). `release` promotes FROM this
+      # digest rather than from a tag name -- see "Check for existing build"
+      # below for why a tag name isn't safe to promote from.
+      image_digest: ${{ steps.resolve-digest.outputs.digest }}
 
     # Permission notes for this job:
     #   contents: read  -- only need source checkout; Release creation moved to
@@ -228,10 +240,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check for existing build (same-commit race guard)
+        # A `v*` tag push and the `main` push for the same commit both reach
+        # this job. Without this check, both would build and push the same
+        # "immutable" SHA tag, and the last writer wins -- the `release` job
+        # could then promote whichever run happened to finish second, not
+        # necessarily the one that passed downstream verification. Since both
+        # runs share the concurrency group above, this check only ever sees
+        # the OTHER run's completed push, never a partial one: if the tag
+        # exists, this run skips build+push entirely and reuses that digest,
+        # making the immutable tag single-writer per commit.
+        id: check-existing
+        env:
+          IMAGE_REF_SHA: ${{ steps.meta.outputs.image_ref_sha }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "${IMAGE_REF_SHA}" >/dev/null 2>&1; then
+            DIGEST="$(docker buildx imagetools inspect "${IMAGE_REF_SHA}" --format '{{json .Manifest}}' | jq -r '.digest')"
+            echo "Found existing ${IMAGE_REF_SHA} -> ${DIGEST}; skipping build+push."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No existing ${IMAGE_REF_SHA}; proceeding with build+push."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push image
         # v7 is a Node 24 runtime bump; removed deprecated
         # DOCKER_BUILD_NO_SUMMARY / DOCKER_BUILD_EXPORT_RETENTION_DAYS envs --
         # we don't set them, so no workflow-side change required.
+        # Skipped when the same commit was already built and pushed by the
+        # other run sharing this concurrency group -- see the guard step above.
+        if: steps.check-existing.outputs.exists != 'true'
+        id: push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -267,6 +308,20 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag_sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.kc_version }}-${{ steps.meta.outputs.date_tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Resolve build digest
+        # Single source of truth for this job's `image_digest` output: this
+        # run's own push if it built, otherwise the other same-commit run's
+        # digest picked up by the guard step above.
+        id: resolve-digest
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.check-existing.outputs.exists }}" == "true" ]]; then
+            DIGEST="${{ steps.check-existing.outputs.digest }}"
+          else
+            DIGEST="${{ steps.push.outputs.digest }}"
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
   pr-build:
     name: PR build (no push)
@@ -632,52 +687,6 @@ jobs:
           fi
           echo "OK: no 'build time options differ' warning in container logs."
 
-      - name: Assert cimd feature is enabled
-        # This lives here rather than in smoke-test: only `--optimized`
-        # actually runs against the persisted build-time options baked by
-        # `kc.sh build --features=cimd` (see Dockerfile stage 2). `start-dev`
-        # re-augments on every boot without `--features`, so cimd is off
-        # there regardless of what was baked in, and the "features enabled"
-        # log line is only printed at augmentation time, never at runtime --
-        # neither signal is meaningful in the start-dev job.
-        run: |
-          set -euo pipefail
-
-          echo "Requesting admin token from master realm"
-          TOKEN_JSON="$(
-            curl --silent --fail --show-error -k --max-time 10 \
-              -X POST https://localhost:8443/realms/master/protocol/openid-connect/token \
-              -H 'Content-Type: application/x-www-form-urlencoded' \
-              -d 'grant_type=password' \
-              -d 'client_id=admin-cli' \
-              -d 'username=admin' \
-              -d 'password=admin'
-          )"
-          ACCESS_TOKEN="$(echo "${TOKEN_JSON}" | jq -r '.access_token')"
-          if [[ -z "${ACCESS_TOKEN}" || "${ACCESS_TOKEN}" == "null" ]]; then
-            echo "::error::Failed to obtain admin token. Response:"
-            echo "${TOKEN_JSON}"
-            exit 1
-          fi
-          echo "Admin token acquired (length=${#ACCESS_TOKEN})"
-
-          echo "Checking serverinfo for the CIMD feature"
-          SERVERINFO_JSON="$(
-            curl --silent --fail --show-error -k --max-time 10 \
-              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-              https://localhost:8443/admin/serverinfo
-          )"
-
-          if echo "${SERVERINFO_JSON}" | jq -e '.features[] | select(.name == "CIMD") | .enabled == true' >/dev/null; then
-            echo "OK: CIMD feature is enabled:"
-            echo "${SERVERINFO_JSON}" | jq '.features[] | select(.name == "CIMD")'
-          else
-            echo "::error::CIMD feature not enabled in /admin/serverinfo response."
-            echo "Full features list:"
-            echo "${SERVERINFO_JSON}" | jq '.features' || echo "${SERVERINFO_JSON}"
-            exit 1
-          fi
-
       - name: Dump container logs on failure
         if: failure()
         run: |
@@ -841,6 +850,13 @@ jobs:
     env:
       IMAGE_REF_SHA: ${{ needs.build-and-push.outputs.image_ref_sha }}
       RELEASE_VERSION: ${{ needs.build-and-push.outputs.release_version }}
+      # Promote FROM the digest, not the immutable tag name. A tag name is a
+      # mutable pointer -- between build-and-push finishing and this job
+      # running, nothing else should re-point it, but promoting by digest
+      # removes that assumption entirely and pins this release to the exact
+      # content this workflow run verified (smoke + integration + vuln scan
+      # all gate on the same `needs.build-and-push` outputs).
+      SOURCE_DIGEST_REF: ghcr.io/${{ github.repository_owner }}/keycloak-bundled@${{ needs.build-and-push.outputs.image_digest }}
       # Single source of truth for the human-readable release tag. Both the
       # "Guard against tag overwrite" pre-check and the "Promote..." step
       # below read this so we don't construct the ref string in two places
@@ -920,10 +936,10 @@ jobs:
         # for no operational benefit on the GitHub-hosted runner.
         run: |
           set -euo pipefail
-          echo "Promoting ${IMAGE_REF_SHA} -> ${TARGET_REF}"
+          echo "Promoting ${SOURCE_DIGEST_REF} -> ${TARGET_REF}"
           docker buildx imagetools create \
             --tag "${TARGET_REF}" \
-            "${IMAGE_REF_SHA}"
+            "${SOURCE_DIGEST_REF}"
           echo "Verifying new tag:"
           docker buildx imagetools inspect "${TARGET_REF}"
 

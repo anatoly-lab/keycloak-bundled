@@ -1,0 +1,126 @@
+---
+# Nightly vulnerability re-scan of already-published images.
+#
+# `build.yml`'s vulnerability-scan job only gates images at build time -- a
+# CVE disclosed the day after a release never re-triggers a scan of that
+# still-running image. This workflow re-scans what's actually out there
+# (`:latest` and the newest published `1.x.y` release tag) on a schedule, so
+# a newly-disclosed HIGH/CRITICAL surfaces without waiting for the next
+# rebuild. A red run here means: go look, a fix may already be available
+# upstream even though nothing in this repo changed.
+
+name: nightly-scan
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  security-events: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  resolve-tags:
+    name: Resolve image tags to scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tags: ${{ steps.resolve.outputs.tags }}
+
+    steps:
+      - name: Resolve tags to scan
+        id: resolve
+        # Always scan `latest`. Also scan the newest published release, if
+        # any -- handled gracefully (no error, just skipped) when the repo
+        # hasn't cut a release yet.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAGS='["latest"]'
+          RELEASE_TAG="$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName | jq -r '.[0].tagName // empty')"
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            IMAGE_TAG="${RELEASE_TAG#v}"
+            TAGS="$(jq -c --arg t "${IMAGE_TAG}" '. + [$t]' <<< "${TAGS}")"
+          else
+            echo "No GitHub releases found; scanning :latest only."
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tags to scan: ${TAGS}"
+
+  scan:
+    name: Scan (${{ matrix.tag }})
+    needs: resolve-tags
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ${{ fromJson(needs.resolve-tags.outputs.tags) }}
+
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+
+    env:
+      # GitHub Actions doesn't allow ${{ env.X }} references inside an `env:`
+      # block declaration (env values can only be composed in `run:` steps),
+      # so this is built from `github.repository_owner` directly rather than
+      # from the workflow-level REGISTRY/IMAGE_NAME env vars.
+      IMAGE_REF: ghcr.io/${{ github.repository_owner }}/keycloak-bundled:${{ matrix.tag }}
+
+    steps:
+      - name: Checkout repository
+        # Needed so .trivyignore (repo root) is present for the scan steps below.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Log in to GitHub Container Registry (pull)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan image, upload SARIF (non-blocking)
+        # exit-code 0: this pass never fails the job by itself -- it exists
+        # only to produce a SARIF file for the Security tab. The second scan
+        # below is what actually gates the run's pass/fail status.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          scan-type: image
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          timeout: 15m
+          trivyignores: .trivyignore
+          format: sarif
+          output: trivy-${{ matrix.tag }}.sarif
+          exit-code: 0
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
+        with:
+          sarif_file: trivy-${{ matrix.tag }}.sarif
+          category: trivy-${{ matrix.tag }}
+
+      - name: Scan image (gate -- fails the run on findings)
+        # Same settings as above, but table output and exit-code 1: this is
+        # what turns the scheduled run red so GitHub emails the repo watchers.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          scan-type: image
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          timeout: 15m
+          trivyignores: .trivyignore
+          format: table
+          exit-code: 1
