@@ -70,12 +70,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint Dockerfile (hadolint)
         # Pinned to a specific patch -- hadolint-action doesn't publish a
         # floating `v3` tag (verified against the GitHub Releases API).
-        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        uses: hadolint/hadolint-action@2a66e89f53d0771bb131a7fa31f3136336094aa6 # v3.4.0
         with:
           dockerfile: ./Dockerfile
 
@@ -85,7 +85,7 @@ jobs:
         # action.yml, so a wrapper is required if we want `uses:` semantics.
         # Pinned to a specific patch -- raven-actions/actionlint doesn't
         # publish a floating `v2` tag either.
-        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
 
   build-and-push:
     name: Build and push image
@@ -121,7 +121,7 @@ jobs:
         # v6 is a Node 24 runtime bump (no input/output changes affecting our
         # usage). ubuntu-latest ships runner >= v2.327.1, which satisfies the
         # Node 24 requirement.
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Compute build metadata
         id: meta
@@ -280,7 +280,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Assert KC_VERSION matches the plugin's Keycloak BOM
         # src/pom.xml's <version.keycloak> pins the BOM the plugin is compiled
@@ -712,7 +712,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21 with Maven cache
         # v5 is a Node 24 runtime bump only; `distribution` / `java-version` /
@@ -754,7 +754,7 @@ jobs:
 
       - name: Upload Failsafe reports on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: failsafe-reports
           path: |
@@ -781,7 +781,7 @@ jobs:
     steps:
       - name: Checkout repository
         # Needed so .trivyignore (repo root) is present for the scan step below.
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Log in to GitHub Container Registry (pull)
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
