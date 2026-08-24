@@ -20,6 +20,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Builder JDK tracks the Keycloak runtime JDK (21), bumped manually
+      # alongside the base image; see CLAUDE.md. The `eclipse-temurin-<N>`
+      # suffix isn't real semver, so Dependabot's major/minor classification
+      # for this tag is unreliable -- both are ignored to be safe. Only
+      # patch-level (3.9.x) Maven updates are auto-PR'd.
+      - dependency-name: "maven"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: maven
     directory: /src
