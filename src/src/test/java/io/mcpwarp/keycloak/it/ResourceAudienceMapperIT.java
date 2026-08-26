@@ -482,10 +482,18 @@ class ResourceAudienceMapperIT {
 
     /**
      * Case 7: a resource URI carrying a fragment is rejected at /authorize itself, before the
-     * mapper is ever consulted — Keycloak's own {@code AuthorizationEndpointChecker} rejects
-     * fragments in target URIs with {@code invalid_target} (RFC 8707 disallows fragments in
-     * resource indicators). A 400 here commonly renders as an HTML error page rather than a
-     * JSON body (unlike a /token 400), so only assert status when the body isn't JSON.
+     * mapper is ever consulted — but NOT with a 400. {@code AuthorizationEndpointChecker
+     * .checkValidResource()} (26.7.2 tag, {@code AuthorizationEndpointChecker.java:288-296})
+     * throws {@code AuthorizationCheckException(BAD_REQUEST, INVALID_TARGET, ...)}, and
+     * {@code AuthorizationEndpoint.authorize()} calls that check from the same try block as
+     * {@code checkResponseType}/{@code checkOIDCParams} ({@code AuthorizationEndpoint.java
+     * :192-197}), whose catch clause calls {@code redirectErrorToClient(...)} — which appends
+     * {@code error=invalid_target} (plus {@code state}) to {@code redirect_uri} and returns a
+     * <b>302</b> ({@code AuthorizationEndpoint.java:320-336}). The {@code throwAsErrorPageException}
+     * path that renders an HTML 400 page is only used for the earlier {@code checkRedirectUri()}
+     * failure ({@code AuthorizationEndpoint.java:165-166}), i.e. when there is no safe place to
+     * redirect to — not applicable here since {@code client_id}/{@code redirect_uri} are valid.
+     * Design doc §6 item 9 documents the same finding.
      */
     @Test
     void resourceWithFragmentAtAuthorizeIsRejected() {
@@ -504,17 +512,21 @@ class ResourceAudienceMapperIT {
 
         assertThat(authPage.statusCode())
                 .withFailMessage(
-                        "/authorize with a resource URI containing a fragment must be rejected (400) by "
-                                + "Keycloak's own AuthorizationEndpointChecker, before the resource-audience mapper "
-                                + "is ever consulted. Body excerpt: %s",
+                        "/authorize with a resource URI containing a fragment must be rejected via a 302 "
+                                + "redirect to redirect_uri carrying error=invalid_target — see this test's "
+                                + "Javadoc for the source citations (AuthorizationEndpoint.java:192-197 calls "
+                                + "redirectErrorToClient, not throwAsErrorPageException). Body excerpt: %s",
                         bodyExcerpt(authPage))
-                .isEqualTo(400);
+                .isEqualTo(302);
 
-        if (authPage.contentType() != null && authPage.contentType().contains("json")) {
-            assertThat(authPage.jsonPath().getString("error"))
-                    .withFailMessage("Expected error=invalid_target. Body: %s", authPage.getBody().asString())
-                    .isEqualTo("invalid_target");
-        }
+        String location = authPage.getHeader("Location");
+        assertThat(location)
+                .withFailMessage(
+                        "302 Location must redirect back to %s carrying error=invalid_target. Location was: %s",
+                        DcrTestSupport.TEST_REDIRECT_URI, location)
+                .isNotNull()
+                .startsWith(DcrTestSupport.TEST_REDIRECT_URI)
+                .contains("error=invalid_target");
     }
 
     // =======================================================================
