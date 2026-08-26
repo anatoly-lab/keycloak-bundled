@@ -7,6 +7,9 @@
 # integration tests). On `v*` tag pushes, a final `release` job promotes the
 # already-verified immutable SHA tag to the human-readable semver tag and
 # publishes a GitHub Release -- only after smoke + integration tests pass.
+# Pull requests get their own `pr-build` job: a local (unpushed) image build
+# plus the same Testcontainers integration tests, run against that PR's own
+# image -- no GHCR push, no :latest/date tags touched.
 #
 # Triggers:
 #   - push to main      -> rebuild on every merge
@@ -324,12 +327,15 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
   pr-build:
-    name: PR build (no push)
+    name: PR build + integration tests (no push)
     runs-on: ubuntu-latest
     needs: lint
     if: github.event_name == 'pull_request'
+    timeout-minutes: 45
     # PRs (Dependabot or otherwise) get lint + a full image build to catch
-    # BOM/base/action breakage; no push, no registry access.
+    # BOM/base/action breakage, plus the same Testcontainers integration
+    # tests as the post-merge `integration-test` job -- run against this
+    # PR's own locally-loaded image. No push, no registry access.
     permissions:
       contents: read
 
@@ -376,13 +382,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - name: Build image (no push)
+      - name: Build image (load into local Docker daemon, no push)
+        # `load: true` + a single platform (required -- buildx can't load a
+        # multi-platform result into the local daemon) puts the built image
+        # into this runner's Docker daemon under a local-only tag, so the
+        # integration tests below can hand it to Testcontainers without any
+        # registry round-trip.
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
           push: false
-          load: false
+          load: true
           platforms: linux/amd64
           build-args: |
             KC_VERSION=${{ env.DEFAULT_KC_VERSION }}
@@ -392,6 +403,49 @@ jobs:
             IMAGE_SOURCE=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          tags: keycloak-bundled:pr-${{ github.sha }}
+
+      - name: Assert built image is present locally
+        # Guards against a silent no-op load, which would otherwise surface
+        # minutes later as a confusing Docker Hub pull error from Testcontainers.
+        env:
+          KC_IMAGE: keycloak-bundled:pr-${{ github.sha }}
+        run: docker image inspect "${KC_IMAGE}" >/dev/null
+
+      - name: Set up JDK 21 with Maven cache
+        # Mirrors the `integration-test` job's setup -- see that job for
+        # rationale on the action version and the `cache: maven` input.
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Run integration tests (Maven verify)
+        # Same Failsafe/Testcontainers handshake as the `integration-test`
+        # job (see there for the working-directory and `-Dimage.ref`
+        # rationale), pointed at the image loaded into the local Docker
+        # daemon above instead of a GHCR ref -- Testcontainers pulls
+        # container images through the Docker daemon, and a locally-loaded
+        # tag satisfies that with no pull required.
+        working-directory: src
+        env:
+          KC_IMAGE: keycloak-bundled:pr-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "Running integration tests against locally-loaded image: ${KC_IMAGE}"
+          mvn -B -ntp verify -Dimage.ref="${KC_IMAGE}"
+
+      - name: Upload Failsafe reports on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: failsafe-reports-pr
+          path: |
+            src/target/failsafe-reports/
+            src/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7
 
   smoke-test:
     name: Smoke test (boot + provider registration)
