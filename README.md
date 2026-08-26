@@ -10,6 +10,7 @@ Keycloak's built-in "Remember Me" checkbox lives on the username/password form. 
 
 - `quay.io/keycloak/keycloak:<KC_VERSION>` as the base.
 - A vendored build of [Herdo/keycloak-remember-me-authenticator](https://github.com/Herdo/keycloak-remember-me-authenticator), rebuilt against the matching Keycloak BOM and dropped into `/opt/keycloak/providers/`.
+- A `resource-audience` OIDC protocol mapper plus a `resource-audience-scope` client-registration policy, for RFC 8707 resource-indicator support on dynamically-registered MCP clients. See `docs/design/2026-08-25-resource-audience-mapper.md`. Both are per-realm configuration — the image ships the provider classes, but they're inert unless a realm's config actually attaches the scope/mapper/policy (see "Deployment topology" below).
 - An "optimized" server: `kc.sh build` runs at image-build time so Quarkus augmentation is already done on container start.
 
 No secrets live in this repo. The image is pushed to GHCR (GitHub Container Registry) using the workflow's auto-provisioned `${{ secrets.GITHUB_TOKEN }}` and `${{ github.actor }}` — no PAT, robot account, or repo-level secret is configured.
@@ -76,6 +77,14 @@ The image is intended to be consumed by a Kubernetes deployment that runs Keyclo
 
 - **Keycloak version.** When the Keycloak Operator is bumped in the consuming deployment, `KC_VERSION` here must be bumped in the same release window so the StatefulSet and the bundled extension share an ABI. Recommended order: bump and publish here first, then bump the Operator downstream. (For instance, the original consumer is `anki-mcp-infrastructure`, which tracks the same Keycloak version this repo builds against.)
 - **Realm-level `rememberMe`.** Starting with Keycloak 26.4.1, the authenticator alone is insufficient — the realm must also have `rememberMe: true`, otherwise sessions get invalidated. See [keycloak#43328](https://github.com/keycloak/keycloak/issues/43328). The flag and the two flow executions (Browser post-auth, Post Broker Login) are managed in the consuming project's realm configuration (typically a realm JSON reconciled by `keycloak-config-cli`).
+
+## Deployment topology
+
+This image is a single build, but it's consumed by more than one product's Keycloak deployment — today, `anki-mcp-infrastructure` (ankimcp) and mcpwarp, each running its **own** Keycloak instance rather than sharing one.
+
+That separation matters for the `resource-audience` mapper and `resource-audience-scope` client-registration policy (see `docs/design/2026-08-25-resource-audience-mapper.md`): both are **per-realm configuration**, not per-image behavior. Shipping the provider classes in this image does nothing on their own — a consumer's Keycloak instance only exercises them if its own realm config attaches the client scope, the mapper, and the policy. ankimcp's instance runs this same image but never configures either, so both stay inert there.
+
+If these (or any other two products built on this image) ever end up sharing one Keycloak instance, the only requirement is a **dedicated realm per product** — realm separation is what keeps one product's client-scope/mapper/policy config from ever touching another product's clients. Two costs come with sharing an instance that separate instances don't have: users become per-realm (no shared accounts without setting up identity brokering between the realms), and upgrade/outage blast radius is shared — a bad Keycloak upgrade or an outage on the shared instance affects every product on it at once.
 
 ## Plugin attribution
 

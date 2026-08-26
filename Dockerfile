@@ -75,6 +75,13 @@ COPY --from=builder /build/target/keycloak-remember-me-authenticator.jar \
 # of starting -- the failure mode that motivated baking these in (v1.0.2).
 # Per Keycloak's contract, matching values are silently ignored at runtime;
 # only divergent values trip the error. To change any of these, rebuild.
+#
+# Per-provider kill switches (docs/design/2026-08-25-resource-audience-mapper.md
+# §4/§4a) -- build-time-only options, so they must be appended to the kc.sh
+# build command below, not passed to `start`. Emergency lever if either SPI
+# misbehaves in prod: append these flags, rebuild, bump the tag.
+#   --spi-protocol-mapper--resource-audience--enabled=false
+#   --spi-client-registration-policy--resource-audience-scope--enabled=false
 RUN /opt/keycloak/bin/kc.sh build \
     --db=postgres \
     --health-enabled=true \

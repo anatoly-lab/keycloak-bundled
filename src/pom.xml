@@ -80,6 +80,18 @@
             <scope>provided</scope>
         </dependency>
 
+        <!--
+            keycloak-services: AbstractOIDCProtocolMapper and the OIDC mapper interfaces
+            (OIDCAccessTokenMapper) live here, not in server-spi-private, in 26.7.2. Also
+            provides ClientRegistrationPolicy / ClientRegistrationPolicyFactory for the
+            resource-audience-scope policy.
+        -->
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-services</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- ================================================================
              Test dependencies (all test-scoped; do not affect the plugin JAR)
              ================================================================ -->
@@ -95,6 +107,29 @@
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
             <version>3.27.7</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>5.14.2</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            org.keycloak.services.ErrorResponseException extends jakarta.ws.rs.WebApplicationException,
+            whose constructor eagerly builds a jakarta.ws.rs.core.Response via
+            jakarta.ws.rs.ext.RuntimeDelegate.getInstance(), a ServiceLoader lookup. In the real
+            server this is satisfied by Quarkus/RESTEasy at runtime; on the plain unit-test classpath
+            there is no JAX-RS implementation, so constructing the exception throws
+            ClassNotFoundException. Pulled in at test scope only so ResourceAudienceMapperTest can
+            actually construct/assert on the exception the mapper throws in strict mode.
+        -->
+        <dependency>
+            <groupId>org.jboss.resteasy</groupId>
+            <artifactId>resteasy-core</artifactId>
+            <version>6.2.12.Final</version>
             <scope>test</scope>
         </dependency>
 
