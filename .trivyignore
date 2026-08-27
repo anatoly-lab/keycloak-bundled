@@ -7,3 +7,13 @@
 # qualifier and reports it as 13.2.1 < 13.2.1.jre11. Driver is never loaded
 # (image is built with --db=postgres). Re-check on next KC bump (added 2026-08-23).
 CVE-2025-59250
+
+# CVE-2026-11822, CVE-2026-11824 — sqlite-libs 3.34.1-10.el9_8, bundled by the
+# RHEL 9.8 UBI base of upstream quay.io/keycloak/keycloak:26.7.2. Fixed in
+# 3.34.1-11.el9_8. Keycloak does not use SQLite; the lib ships with the UBI
+# base image. Both CVEs require attacker-controlled FTS5 queries parsed by
+# SQLite, which no Keycloak code path does. Runtime image is ubi9-micro with
+# no package manager, so we cannot patch in place. Re-check on next Keycloak
+# bump / when upstream rebuilds the 26.7.x base (added 2026-08-27).
+CVE-2026-11822
+CVE-2026-11824
