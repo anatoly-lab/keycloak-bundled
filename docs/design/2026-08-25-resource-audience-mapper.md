@@ -136,6 +136,23 @@ Anchor every pattern (`^…$`) even though step 4 uses `matches()`; explicit anc
 
 No per-provider kill switch documented separately — the policy uses the same generic `scope.getBoolean("enabled", true)` mechanism as any component factory, under SPI `client-registration-policy`. Since this policy only affects DCR-registered clients (§7), disabling it stops new/updated DCR clients from getting the scope but does not retroactively remove it from clients that already have it.
 
+### 4b. Known limitations
+
+**Bottom line: Device Authorization Grant is not supported.** A client carrying `mcpwarp-resource` that authenticates via device flow gets no `resource`-derived audience — under `strict=true` it's refused at `/token`. Never attach `mcpwarp-resource` (default or optional) to a realm-config client that uses device flow.
+
+Verified in 26.7.2 source:
+
+- `DeviceEndpoint` parses `resource` from the device-authorization request (`AuthzEndpointRequestParser.java:137`) but never stores it.
+- `OAuth2DeviceCodeModel` has no `resource` field, and `additionalParams` explicitly skips known params (`AuthzEndpointRequestParser.java:83,166-171`) — so `resource` isn't smuggled through there either.
+- Browser verification of the device code sets only the `ISSUER`, `SCOPE`, and verified-user-code notes (`DeviceEndpoint.java:346-349,435-446`) — nothing resource-like.
+- `DeviceGrantType.java:358-363` copies nothing resource-like from the device code model to the token request.
+- The only `resource` present at `/token` for a device-flow exchange is the raw form param (`OAuth2GrantTypeBase.java:116`), which this mapper deliberately does not trust — see decision (a) in §2.
+- Upstream's experimental `resource_indicators` feature has the same gap: `ResourceIndicatorsPostProcessor.java:31-37` trusts the original `resource` only for `authorization_code` and `refresh_token` grants.
+
+**Why this can't happen by accident:** the DCR policy (§3a/§4a) only attaches `mcpwarp-resource` to DCR-registered clients. The mcpwarp CLI is a realm-config client using device flow with a fixed audience via the built-in `oidc-audience-mapper` on its own scope — it never goes through DCR, so it can only pick up `mcpwarp-resource` by manual misconfiguration.
+
+**If dynamic `aud` on device flow is ever needed:** the only safe option is validate-don't-trust the `/token` `resource` param, the same posture upstream takes, plus an upstream change to persist `resource` on `OAuth2DeviceCodeModel`. Not planned.
+
 ---
 
 ## 5. Realm config snippet (keycloak-config-cli) — **DRAFT**
