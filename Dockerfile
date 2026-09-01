@@ -76,6 +76,10 @@ COPY --from=builder /build/target/keycloak-remember-me-authenticator.jar \
 # Per Keycloak's contract, matching values are silently ignored at runtime;
 # only divergent values trip the error. To change any of these, rebuild.
 #
+# event-metrics-user-enabled is build-time (EventOptions.java, buildTime(true));
+# the events/tags selection (event-metrics-user-events/-tags) is runtime and
+# stays in the consuming deployment.
+#
 # Per-provider kill switches (docs/design/2026-08-25-resource-audience-mapper.md
 # §4/§4a) -- build-time-only options, so they must be appended to the kc.sh
 # build command below, not passed to `start`. Emergency lever if either SPI
@@ -85,6 +89,7 @@ COPY --from=builder /build/target/keycloak-remember-me-authenticator.jar \
 RUN /opt/keycloak/bin/kc.sh build \
     --db=postgres \
     --health-enabled=true \
+    --event-metrics-user-enabled=true \
     --metrics-enabled=true
 
 
