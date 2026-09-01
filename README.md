@@ -12,6 +12,7 @@ Keycloak's built-in "Remember Me" checkbox lives on the username/password form. 
 - A vendored build of [Herdo/keycloak-remember-me-authenticator](https://github.com/Herdo/keycloak-remember-me-authenticator), rebuilt against the matching Keycloak BOM and dropped into `/opt/keycloak/providers/`.
 - A `resource-audience` OIDC protocol mapper plus a `resource-audience-scope` client-registration policy, for RFC 8707 resource-indicator support on dynamically-registered MCP clients. See `docs/design/2026-08-25-resource-audience-mapper.md`. Both are per-realm configuration — the image ships the provider classes, but they're inert unless a realm's config actually attaches the scope/mapper/policy (see "Deployment topology" below). The mapper only applies to the authorization-code flow (and its refreshes) — not device flow; see the design doc's "Known limitations" section.
 - An "optimized" server: `kc.sh build` runs at image-build time so Quarkus augmentation is already done on container start.
+- User-event metrics plumbing enabled at build (`--event-metrics-user-enabled=true`); counters appear once the consuming deployment selects events to track, with bounded cardinality and tags defaulting to realm.
 
 No secrets live in this repo. The image is pushed to GHCR (GitHub Container Registry) using the workflow's auto-provisioned `${{ secrets.GITHUB_TOKEN }}` and `${{ github.actor }}` — no PAT, robot account, or repo-level secret is configured.
 
