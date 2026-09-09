@@ -9,3 +9,14 @@
 # (com.microsoft.sqlserver.mssql-jdbc-13.2.1.jre11.jar, same version). Re-check
 # on next KC bump (added 2026-08-23; re-checked 2026-08-31).
 CVE-2025-59250
+
+# CVE-2026-75595 — io.netty:netty-handler 4.1.136.Final, bundled by upstream
+# Keycloak (Quarkus/Vert.x). Fixed in 4.1.137.Final / 4.2.17.Final; no Keycloak
+# release ships the fix yet (26.7.3 is current). SslClientHelloHandler falls
+# back to the default SslContext on a fragmented TLS ClientHello (SNI routing
+# bypass) — only exploitable when Keycloak terminates TLS itself with per-SNI
+# contexts and per-SNI clientAuth=REQUIRE. Consumer runs http.httpEnabled=true,
+# no tlsSecret, proxy.headers=xforwarded; TLS terminates at Cloudflare
+# Tunnel/Traefik and there is no mTLS. Re-check on next KC bump
+# (added 2026-09-09; re-check by 2026-10-09 if no bump).
+CVE-2026-75595
