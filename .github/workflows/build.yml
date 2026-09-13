@@ -83,7 +83,7 @@ jobs:
       - name: Lint Dockerfile (hadolint)
         # Pinned to a specific patch -- hadolint-action doesn't publish a
         # floating `v3` tag (verified against the GitHub Releases API).
-        uses: hadolint/hadolint-action@2a66e89f53d0771bb131a7fa31f3136336094aa6 # v3.4.0
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: ./Dockerfile
 
@@ -228,7 +228,7 @@ jobs:
 
       - name: Set up QEMU
         # v4 is a Node 24 runtime bump only; no input changes.
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
 
       - name: Set up Docker Buildx
         # v4 is a Node 24 runtime bump; removed the deprecated `install:` input
@@ -415,7 +415,7 @@ jobs:
       - name: Set up JDK 21 with Maven cache
         # Mirrors the `integration-test` job's setup -- see that job for
         # rationale on the action version and the `cache: maven` input.
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'
@@ -782,7 +782,7 @@ jobs:
         # `cache` inputs are unchanged. The `cache: maven` flag wires the
         # built-in cache around ~/.m2 keyed on the workspace's pom.xml hash --
         # it auto-discovers our `src/pom.xml`.
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '21'
@@ -1010,7 +1010,7 @@ jobs:
         # notes."). Net effect: the Image section below renders FIRST on
         # the release page, followed by the auto-generated "What's
         # Changed" / "Full Changelog" section.
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
           draft: false
