@@ -5,54 +5,7 @@
 # CVE-2025-59250 — com.microsoft.sqlserver:mssql-jdbc, bundled by upstream Keycloak.
 # Installed 13.2.1.jre11 IS the fixed version; trivy mis-parses the ".jre11"
 # qualifier and reports it as 13.2.1 < 13.2.1.jre11. Driver is never loaded
-# (image is built with --db=postgres). Re-checked against 26.7.3
+# (image is built with --db=postgres). Re-checked against 26.7.5
 # (com.microsoft.sqlserver.mssql-jdbc-13.2.1.jre11.jar, same version). Re-check
-# on next KC bump (added 2026-08-23; re-checked 2026-08-31).
+# on next KC bump (added 2026-08-23; re-checked 2026-10-01).
 CVE-2025-59250
-
-# CVE-2026-75595 — io.netty:netty-handler 4.1.136.Final, bundled by upstream
-# Keycloak (Quarkus/Vert.x). Fixed in 4.1.137.Final / 4.2.17.Final; no Keycloak
-# release ships the fix yet (26.7.3 is current). SslClientHelloHandler falls
-# back to the default SslContext on a fragmented TLS ClientHello (SNI routing
-# bypass) — only exploitable when Keycloak terminates TLS itself with per-SNI
-# contexts and per-SNI clientAuth=REQUIRE. Consumer runs http.httpEnabled=true,
-# no tlsSecret, proxy.headers=xforwarded; TLS terminates at Cloudflare
-# Tunnel/Traefik and there is no mTLS. Re-check on next KC bump
-# (added 2026-09-09; re-check by 2026-10-09 if no bump).
-CVE-2026-75595
-
-# CVE-2026-84939 — org.freemarker:freemarker 2.3.32, bundled by upstream
-# Keycloak. Fixed in 2.3.35 (on keycloak release/26.7, ships in 26.7.5; not in
-# 26.7.3/26.7.4). Path traversal needs an attacker-controlled malformed Locale
-# reaching FreeMarker's localized template lookup. Keycloak calls
-# cfg.getTemplate(name, "UTF-8") with no locale (JVM default), template names
-# are fixed, and user locales are forLanguageTag-parsed and matched against
-# realm supportedLocales, never passed to FreeMarker. Upstream assessment: not
-# vulnerable (keycloak#52888). Remove on bump to 26.7.5+ (added 2026-09-25;
-# re-check by 2026-10-25 if no bump).
-CVE-2026-84939
-
-# CVE-2026-8763 — org.bouncycastle:bcprov-jdk18on 1.84, bundled by upstream
-# Keycloak via the Quarkus 3.33.3.x BOM. Fixed in 1.85; no Keycloak release
-# ships it (26.8/main has 1.85.2). Name-constraint bypass in
-# PKIXNameConstraintValidator; BC PKIX path building is only used by the X.509
-# user/client authenticators and the nginx client-cert lookup. No X.509 user
-# authenticator is configured in any flow, and there is no x509cert-lookup
-# SPI; the built-in clients flow keeps client-x509 as ALTERNATIVE, but with
-# TLS terminated at the ingress proxy (httpEnabled=true, no tlsSecret) it
-# never sees a client cert and returns attempted(). Remove when the KC base
-# ships bcprov-jdk18on >= 1.85 (currently only 26.8/main via Quarkus
-# 3.33.4+/3.40; 26.7.x still pins 1.84), or if X.509/mTLS is ever enabled
-# (added 2026-09-25; re-check by 2026-10-25 if no bump).
-CVE-2026-8763
-
-# CVE-2026-13506 — org.bouncycastle:bcprov-jdk18on 1.84 (same jar as above).
-# Fixed in 1.85. Nesting-depth DoS only on lazy ASN.1 parsing, which BC 1.84
-# uses only for CRLs (CertificateFactory.engineGenerateCRL, X509CRLHolder).
-# Keycloak parses CRLs only in the X.509 authenticator, with the JDK (SUN)
-# CertificateFactory, not BC. Cert/PEM/x5c/JWT parsing is eager and unaffected.
-# Remove when the KC base ships bcprov-jdk18on >= 1.85 (currently only
-# 26.8/main via Quarkus 3.33.4+/3.40; 26.7.x still pins 1.84), or if
-# X.509/CRL checking is ever enabled (added 2026-09-25; re-check by 2026-10-25
-# if no bump).
-CVE-2026-13506
