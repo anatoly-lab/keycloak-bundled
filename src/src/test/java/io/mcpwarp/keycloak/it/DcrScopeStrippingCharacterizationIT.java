@@ -52,21 +52,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  * necessary, or its {@code afterUpdate} handling needs re-checking — go
  * re-read the design doc's §3/§10 before touching the policy.
  *
- * <h2>The observed matrix (26.7.2, verified in CI on PR #14)</h2>
+ * <h2>The observed matrix</h2>
  *
  * <table>
  *   <caption>DCR body {@code scope} field vs. where {@code mcpwarp-resource} lands</caption>
- *   <tr><th>DCR request {@code scope}</th><th>Outcome</th></tr>
- *   <tr><td>{@code "openid profile email"} (omits the scope)</td><td>ABSENT — stripped entirely</td></tr>
- *   <tr><td>no {@code scope} field at all</td><td>DEFAULT — realm-default attachment survives</td></tr>
- *   <tr><td>{@code "openid profile email mcpwarp-resource"}</td><td>OPTIONAL — reclassified from default to optional</td></tr>
+ *   <tr><th>DCR request {@code scope}</th><th>26.7.2 (PR #14)</th><th>26.8.x</th></tr>
+ *   <tr><td>{@code "openid profile email"} (omits the scope)</td><td>ABSENT — stripped entirely</td><td>DEFAULT</td></tr>
+ *   <tr><td>no {@code scope} field at all</td><td>DEFAULT — realm-default attachment survives</td><td>DEFAULT</td></tr>
+ *   <tr><td>{@code "openid profile email mcpwarp-resource"}</td><td>OPTIONAL — reclassified from default to optional</td><td>DEFAULT</td></tr>
  * </table>
  *
- * No client scope registering with an explicit {@code scope} field ever ends
- * up with {@code mcpwarp-resource} as a DEFAULT scope from realm-default
- * attachment alone — case (ii) is the only survival case, and it requires the
+ * On 26.7.x no client registering with an explicit {@code scope} field ever
+ * ended up with {@code mcpwarp-resource} as a DEFAULT scope from realm-default
+ * attachment alone — case (ii) was the only survival case, and it requires the
  * DCR client to omit {@code scope} entirely, which no real OAuth/MCP client
  * does. Hence the policy.
+ *
+ * <p>26.8.0 changed this (keycloak#50807, PR keycloak#50842):
+ * {@code AbstractClientRegistrationProvider.create} now fills
+ * {@code defaultClientScopes} with the realm's protocol-matching default
+ * scopes whenever the request carries optional scopes but no defaults, so
+ * {@code updateClientScopes} keeps realm defaults as DEFAULT (and a default
+ * that is also requested in {@code scope} stays DEFAULT, since defaults win
+ * in its merge). The policy is now redundant for this realm shape (scope
+ * marked realm-default) but still load-bearing when the scope is not a realm
+ * default.
  *
  * <p>Boots the real bundled image the same way
  * {@link com.herdo.keycloak.it.RememberMeAuthenticatorIT} does: the image
@@ -147,9 +157,9 @@ class DcrScopeStrippingCharacterizationIT {
     // =======================================================================
 
     @Test
-    void scopeOmittingMcpwarpResourceIsStrippedEntirely() {
+    void scopeOmittingMcpwarpResourceKeepsRealmDefault() {
         assertOutcome("scope=\"openid profile email\" (no mcpwarp-resource)",
-                "openid profile email", Outcome.ABSENT);
+                "openid profile email", Outcome.DEFAULT);
     }
 
     @Test
@@ -158,9 +168,9 @@ class DcrScopeStrippingCharacterizationIT {
     }
 
     @Test
-    void scopeIncludingMcpwarpResourceIsReclassifiedAsOptional() {
+    void scopeIncludingMcpwarpResourceStaysDefault() {
         assertOutcome("scope=\"openid profile email mcpwarp-resource\"",
-                "openid profile email mcpwarp-resource", Outcome.OPTIONAL);
+                "openid profile email mcpwarp-resource", Outcome.DEFAULT);
     }
 
     // =======================================================================

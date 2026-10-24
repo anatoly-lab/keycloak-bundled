@@ -36,6 +36,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * helpers {@link DcrScopeStrippingCharacterizationIT} uses, so the two
  * classes only differ in which {@code ClientRegistrationPolicy} components
  * are on the realm and what they assert.
+ *
+ * <p>Unlike the characterization IT, {@code mcpwarp-resource} is deliberately
+ * NOT a realm default here: since 26.8.0 (keycloak#50807) DCR keeps realm
+ * defaults as DEFAULT on its own, so a realm-default scope would make every
+ * "ends as DEFAULT" assertion pass without the policy. The scope only exists
+ * and is allowed for DCR, and a second realm without the policy
+ * ({@link #CONTROL_REALM}) asserts the scope does NOT end as DEFAULT there,
+ * so this class fails loudly if it ever stops exercising the policy.
  */
 @Testcontainers
 class ResourceAudienceScopePolicyIT {
@@ -44,7 +52,10 @@ class ResourceAudienceScopePolicyIT {
             System.getProperty("image.ref", "ghcr.io/anatoly-lab/keycloak-bundled:latest");
 
     private static final String TEST_REALM = "audpolicytest";
+    private static final String CONTROL_REALM = "audpolicycontrol";
     private static final String SCOPE_NAME = "mcpwarp-resource";
+
+    private static String scopeId;
 
     /**
      * Provider id of the {@code ClientRegistrationPolicy} under test — must
@@ -76,14 +87,18 @@ class ResourceAudienceScopePolicyIT {
 
         String adminToken = DcrTestSupport.adminAccessToken();
         DcrTestSupport.createRealm(adminToken, TEST_REALM);
-        String scopeId = DcrTestSupport.createResourceScope(adminToken, TEST_REALM, SCOPE_NAME);
-        DcrTestSupport.markScopeAsRealmDefault(adminToken, TEST_REALM, scopeId, SCOPE_NAME);
+        scopeId = DcrTestSupport.createResourceScope(adminToken, TEST_REALM, SCOPE_NAME);
         // The Allowed Client Scopes policy must still permit mcpwarp-resource
         // explicitly (design doc §5) so an explicit-scope DCR body (case iii)
         // isn't 403'd before the resource-audience-scope policy ever runs.
         DcrTestSupport.configureAnonymousDcrPolicies(adminToken, TEST_REALM, SCOPE_NAME);
         addResourceAudienceScopePolicy(adminToken, "anonymous");
         addResourceAudienceScopePolicy(adminToken, "authenticated");
+
+        // Same realm shape minus the policy.
+        DcrTestSupport.createRealm(adminToken, CONTROL_REALM);
+        DcrTestSupport.createResourceScope(adminToken, CONTROL_REALM, SCOPE_NAME);
+        DcrTestSupport.configureAnonymousDcrPolicies(adminToken, CONTROL_REALM, SCOPE_NAME);
     }
 
     /**
@@ -129,10 +144,36 @@ class ResourceAudienceScopePolicyIT {
     @Test
     void scopeIncludingMcpwarpResourceEndsAsDefaultNotOptional() {
         // Case (iii) is the interesting one: without the policy this lands as
-        // OPTIONAL (DcrScopeStrippingCharacterizationIT). With the policy,
-        // afterRegister forces it back to DEFAULT even though the client
-        // explicitly requested it.
+        // OPTIONAL (see controlRealmWithoutPolicyDoesNotAttachScopeAsDefault).
+        // With the policy, afterRegister forces it to DEFAULT even though the
+        // client explicitly requested it.
         assertScopeIsDefaultAfterDcr("openid profile email mcpwarp-resource");
+    }
+
+    /**
+     * Negative control: same DCR body as case (iii) against {@link
+     * #CONTROL_REALM}, which has no {@code resource-audience-scope} policy.
+     * If this ever sees DEFAULT, Keycloak attaches the scope on its own and
+     * the positive cases above no longer prove anything about the policy.
+     */
+    @Test
+    void controlRealmWithoutPolicyDoesNotAttachScopeAsDefault() {
+        Response registration = DcrTestSupport.registerDcrClient(CONTROL_REALM, "openid profile email mcpwarp-resource");
+        assertThat(registration.statusCode())
+                .withFailMessage("DCR POST must succeed (201). Body: %s", registration.getBody().asString())
+                .isEqualTo(201);
+
+        String adminToken = DcrTestSupport.adminAccessToken();
+        String internalId = DcrTestSupport.lookUpInternalClientId(
+                adminToken, CONTROL_REALM, registration.jsonPath().getString("client_id"));
+        List<String> defaultScopes = DcrTestSupport.clientScopeNames(adminToken, CONTROL_REALM, internalId, "default-client-scopes");
+
+        assertThat(defaultScopes)
+                .withFailMessage(
+                        "Without the resource-audience-scope policy, '%s' must not end as a DEFAULT scope "
+                                + "(it is not a realm default). Got: %s. Keycloak's DCR scope handling changed; "
+                                + "this class no longer isolates the policy.", SCOPE_NAME, defaultScopes)
+                .doesNotContain(SCOPE_NAME);
     }
 
     /**
@@ -145,6 +186,12 @@ class ResourceAudienceScopePolicyIT {
      * and would strip the scope the same way it does on create — the policy's
      * {@code afterUpdate} hook must re-add it, exactly like {@code
      * afterRegister} does on create.
+     *
+     * <p>Since 26.8.0 {@code OIDCClientRegistrationProvider.updateOIDC} carries
+     * the client's existing DEFAULT scopes into the update, so a scope that is
+     * already DEFAULT survives the PUT without {@code afterUpdate}. The test
+     * therefore detaches the scope over the admin API first; only {@code
+     * afterUpdate} can bring it back.
      */
     @Test
     void dcrPutUpdateReAddsScopeAfterStrip() {
@@ -154,6 +201,18 @@ class ResourceAudienceScopePolicyIT {
         String clientId = registration.jsonPath().getString("client_id");
         String registrationAccessToken = registration.jsonPath().getString("registration_access_token");
         assertThat(registrationAccessToken).as("registration_access_token").isNotBlank();
+
+        String setupToken = DcrTestSupport.adminAccessToken();
+        String setupInternalId = DcrTestSupport.lookUpInternalClientId(setupToken, TEST_REALM, clientId);
+        given()
+                .header("Authorization", "Bearer " + setupToken)
+                .when()
+                .delete("/admin/realms/" + TEST_REALM + "/clients/" + setupInternalId + "/default-client-scopes/" + scopeId)
+                .then()
+                .statusCode(204);
+        assertThat(DcrTestSupport.clientScopeNames(setupToken, TEST_REALM, setupInternalId, "default-client-scopes"))
+                .as("precondition: scope detached before the DCR PUT")
+                .doesNotContain(SCOPE_NAME);
 
         Map<String, Object> updateBody = Map.of(
                 "client_id", clientId,

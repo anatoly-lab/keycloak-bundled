@@ -24,7 +24,7 @@ Source of truth for all `file:line` below: `docs/research/2026-08-25-resource-au
 | no `scope` field at all | DEFAULT — realm-default attachment survives |
 | `"openid profile email mcpwarp-resource"` | **OPTIONAL** — reclassified from default to optional |
 
-Real MCP clients always send an explicit `scope` field (case 1 or 3) — no real client omits it. So realm-default attachment never gives a real client the scope as DEFAULT. Decision (b) below is rewritten around the policy.
+Real MCP clients always send an explicit `scope` field (case 1 or 3) — no real client omits it. So realm-default attachment never gives a real client the scope as DEFAULT. Decision (b) below is rewritten around the policy. (This table is 26.7.x behavior; 26.8.0 changed it — see the 26.8 note under decision (b).)
 
 ---
 
@@ -41,6 +41,8 @@ Real MCP clients always send an explicit `scope` field (case 1 or 3) — no real
 - Independently, the realm's DCR **Allowed Client Scopes** policy (`allowed-client-templates`) must still permit `mcpwarp-resource` explicitly, so a client that *does* ask for the scope in its `scope` field (case iii) isn't 403'd before the new policy ever runs; `allow-default-scopes: true` covers realm default+optional scopes (`ClientScopesClientRegistrationPolicy.java:123-134`), but ankimcp learned the hard way that `openid` is *not* covered and must be listed explicitly — keep that entry too.
 
 **Why force-add rather than just fixing the Allowed Client Scopes policy or re-ordering the realm-default listener:** the strip happens inside `RepresentationToModel.updateClientScopes`, which runs unconditionally whenever the DCR body carries a `scope`/`defaultClientScopes`/`optionalClientScopes` field — there is no realm-level policy knob that changes that method's behavior. The only extension point that runs *after* it is `ClientRegistrationPolicy#afterRegister`/`#afterUpdate`.
+
+**26.8 note — `mcpwarp-resource` must NOT be a realm default.** 26.8.0 (keycloak#50807, PR keycloak#50842) changed `AbstractClientRegistrationProvider.create` to fill `defaultClientScopes` with the realm's default scopes whenever the DCR body carries `scope`, so realm defaults now survive DCR as DEFAULT in all three gate cases. That would make a realm-default `mcpwarp-resource` "work" for DCR, but it would also land on every admin-API/console-created client — and with `strict=true` (§4) every such client that doesn't send `resource` at `/authorize` is refused tokens with `invalid_target`. So the scope stays a plain realm client scope, not a realm default, and the policy remains the only thing that attaches it, and only on the DCR path. (26.8.0 also carries a client's existing DEFAULT scopes into a DCR `PUT` that sends `scope` — `OIDCClientRegistrationProvider.updateOIDC` — so `afterUpdate` is now mostly a backstop; it stays.)
 
 **(c) `--features=resource-indicators` stays OFF.** It shipped in 26.7.2 as `Type.EXPERIMENTAL` (`Profile.java:199`), so it is off by default and we do not turn it on. Two reasons: it cannot mint an audience that is not already in the token (`ResourceIndicatorsPostProcessor.java:56-90` — `urn:client:<id>`, or a URL matched against a client's `resource_url` attribute), which is useless for thousands of dynamic URLs; and its post-processor calls `audience(...)` (**replace**, `JsonWebToken.java:211`) rather than `addAudience` (**append+dedupe**, `:216-231`), so enabling it alongside this mapper would clobber our `aud`. Note the *syntax* validation of `resource` at `/authorize` is **not** feature-gated and runs regardless (`ResourceIndicatorValidation.java:14-38`: absolute URI, no fragment, no query, non-null path) — `https://<id>.mcpwarp.io/mcp` passes; a malformed value gets a 400 `invalid_target` before any mapper runs, which is fine and free validation.
 
@@ -157,7 +159,7 @@ Verified in 26.7.2 source:
 
 ## 5. Realm config snippet (keycloak-config-cli) — **DRAFT**
 
-**Bottom line:** one client scope carrying one mapper, added to `defaultDefaultClientScopes`, plus one line in the DCR Allowed Client Scopes policy. Not yet validated against config-cli `6.5.1-26.5.5`; treat as a sketch until IT #1 passes.
+**Bottom line:** one client scope carrying one mapper (NOT a realm default — see the 26.8 note under §2 decision (b)), plus one line in the DCR Allowed Client Scopes policy and the `resource-audience-scope` policy component. Not yet validated against config-cli `6.5.1-26.5.5`; treat as a sketch until IT #1 passes.
 
 ```jsonc
 // realm .clientScopes[]
@@ -187,10 +189,12 @@ Verified in 26.7.2 source:
 ```
 
 ```jsonc
-// realm root — kept as a realm default too, harmless belt-and-braces for the
-// no-scope-field DCR case (empirical gate case 2) and for any non-DCR client
-// created directly via the admin API/console.
-"defaultDefaultClientScopes": ["... existing ...", "mcpwarp-resource"]
+// realm root — do NOT add mcpwarp-resource to defaultDefaultClientScopes (or
+// defaultOptionalClientScopes). As a realm default it would attach to every
+// admin-API/console-created client too, and strict=true refuses tokens to any
+// of them that doesn't send `resource`. The resource-audience-scope policy
+// below attaches it on DCR, including the no-scope-field case.
+"defaultDefaultClientScopes": ["... existing ..."]
 ```
 
 ```jsonc
@@ -252,9 +256,9 @@ Note for the ankimcp realm specifically: its per-service scopes (`studio-mcp`, `
 
 **Integration tests** (`*IT.java`, Failsafe, Testcontainers against the published image):
 
-1. **`DcrScopeStrippingCharacterizationIT`** (renamed from `DcrDefaultScopeMatrixIT` — the gate spike; **ran in CI on PR #14, result recorded in §1, test is now GREEN and permanent**). POST `/realms/<r>/clients-registrations/openid-connect` three ways: (a) `scope: "openid profile email"` → asserts ABSENT, (b) no `scope` field → asserts DEFAULT, (c) `scope: "openid profile email mcpwarp-resource"` → asserts OPTIONAL. Documents Keycloak's own DCR scope-stripping behavior as a guardrail: a failure here means Keycloak's behavior changed, which is the trigger to re-evaluate whether the `resource-audience-scope` policy is still needed or needs adjusting (see the class Javadoc).
+1. **`DcrScopeStrippingCharacterizationIT`** (renamed from `DcrDefaultScopeMatrixIT` — the gate spike; **ran in CI on PR #14, result recorded in §1, test is now GREEN and permanent**). POST `/realms/<r>/clients-registrations/openid-connect` three ways: (a) `scope: "openid profile email"` → asserts ABSENT, (b) no `scope` field → asserts DEFAULT, (c) `scope: "openid profile email mcpwarp-resource"` → asserts OPTIONAL. On 26.8+ all three assert DEFAULT (keycloak#50807, §2 decision (b)). Documents Keycloak's own DCR scope-stripping behavior as a guardrail: a failure here means Keycloak's behavior changed, which is the trigger to re-evaluate whether the `resource-audience-scope` policy is still needed or needs adjusting (see the class Javadoc).
 
-2. **`ResourceAudienceScopePolicyIT`** (new, no longer `@Disabled` now that the `resource-audience-scope` provider is implemented — see §8). Same three DCR shapes as #1, but asserts `mcpwarp-resource` ends as **DEFAULT in all three** (the policy overrides whatever `updateClientScopes` stripped). Plus a fourth case: DCR `PUT` update that omits the scope from its `scope` field — asserts the scope is re-added as DEFAULT by `afterUpdate`. Shares realm/scope/policy/DCR plumbing with #1 via a small package-private helper, `DcrTestSupport`, rather than duplicating it (both classes register clients against a throwaway realm and read scopes back over the admin API — same shape, different assertions and a different set of `ClientRegistrationPolicy` components on the realm).
+2. **`ResourceAudienceScopePolicyIT`** (new, no longer `@Disabled` now that the `resource-audience-scope` provider is implemented — see §8). Same three DCR shapes as #1, but asserts `mcpwarp-resource` ends as **DEFAULT in all three** (the policy overrides whatever `updateClientScopes` stripped). Plus a fourth case: DCR `PUT` update that omits the scope from its `scope` field — asserts the scope is re-added as DEFAULT by `afterUpdate`. Unlike #1, the scope is **not** a realm default in this class's realm (on 26.8+ a realm default would pass every case without the policy), and a policy-less control realm asserts the scope does not end as DEFAULT. Shares realm/scope/policy/DCR plumbing with #1 via a small package-private helper, `DcrTestSupport`, rather than duplicating it (both classes register clients against a throwaway realm and read scopes back over the admin API — same shape, different assertions and a different set of `ClientRegistrationPolicy` components on the realm).
 
 3. **Full auth-code flow, minted token `aud`, post-mapper.** Once the mapper exists, drive a full auth-code flow against a DCR-created client with `resource=https://x.mcpwarp.io/mcp` and assert the minted access token's `aud` contains it.
 4. `aud` == the `/authorize` `resource`, for a normal (non-DCR) client with the scope.
@@ -283,7 +287,7 @@ What's actually left:
 
 **If mcpwarp ever shares ankimcp's instance in the future** (not planned, but worth stating the cost): the only *requirement* is a dedicated `mcpwarp` realm — the mapper and the policy are per-realm config, so as long as ankimcp's realm never carries `mcpwarp-resource`/`resource-audience`/`resource-audience-scope`, the two products don't interfere even on one instance. The costs of sharing at that point: (1) users become per-realm, so ankimcp and mcpwarp would need a brokering setup for any shared-account story, not a single user table; (2) upgrade/outage blast radius is shared — a bad Keycloak upgrade or an outage on the shared instance takes down both products at once, where separate instances only take down one.
 
-**One more scoping fact, independent of topology:** the `resource-audience-scope` policy only ever runs on the DCR code path (`ClientRegistrationPolicyManager.triggerAfterRegister`/`triggerAfterUpdate`, §3a). A web-app client created directly via a realm JSON import (or the admin console/API) never goes through Dynamic Client Registration at all, so it never gets `mcpwarp-resource` attached and is never subject to the mapper's `strict=true` rejection. Only DCR-registered MCP clients are ever in scope for either SPI — this holds regardless of instance topology.
+**One more scoping fact, independent of topology:** the `resource-audience-scope` policy only ever runs on the DCR code path (`ClientRegistrationPolicyManager.triggerAfterRegister`/`triggerAfterUpdate`, §3a). A web-app client created directly via a realm JSON import (or the admin console/API) never goes through Dynamic Client Registration at all, so it never gets `mcpwarp-resource` attached and is never subject to the mapper's `strict=true` rejection — provided the scope is not a realm default (§5). Only DCR-registered MCP clients are ever in scope for either SPI — this holds regardless of instance topology.
 
 ---
 
@@ -307,13 +311,13 @@ What's actually left:
 
 - **Watch:** `Profile.java`'s `RESOURCE_INDICATORS` graduating from `Type.EXPERIMENTAL` to preview/supported; and `ResourceIndicatorsPostProcessor.java:56-90` gaining a resolution path that does **not** require the audience to already be present in the token or a pre-registered per-client `resource_url` (`ResourceIndicatorConstants.java:7`). Upstream trackers: keycloak#14355 (umbrella), #41526 (MCP), PR #46763 (what shipped).
 - **The double-`aud` hazard is not real, it is worse than that:** the native post-processor calls `accessToken().audience(...)` — a **replace**. If both are on, whichever runs last wins and the native one runs after mappers, so it would silently *erase* our audience, not duplicate it. There is no "both on" middle state to test in.
-- **Drop procedure, in order:** (1) confirm the native path mints the right `aud` on a staging realm with the mapper's scope removed from that client; (2) remove `mcpwarp-resource` from `defaultDefaultClientScopes` and delete the scope; (3) enable `--features=resource-indicators` in the Dockerfile's `kc.sh build`; (4) rebuild, bump, verify; (5) delete the mapper class, its services file, and its tests in a follow-up PR. Never (3) before (2).
+- **Drop procedure, in order:** (1) confirm the native path mints the right `aud` on a staging realm with the mapper's scope removed from that client; (2) remove the `resource-audience-scope` policy components and delete the `mcpwarp-resource` scope; (3) enable `--features=resource-indicators` in the Dockerfile's `kc.sh build`; (4) rebuild, bump, verify; (5) delete the mapper class, its services file, and its tests in a follow-up PR. Never (3) before (2).
 
 ---
 
 ## 10. Open questions
 
-1. ~~**Does DCR keep the realm-default scope?**~~ **RESOLVED, 2026-08-26.** No — see the empirical gate result in §1 and `DcrScopeStrippingCharacterizationIT`. Realm-default attachment survives only when the DCR body omits `scope` entirely, which no real client does. This is why §2 decision (b) and §3a now specify a `ClientRegistrationPolicy` as the mechanism, not a contingency.
+1. ~~**Does DCR keep the realm-default scope?**~~ **RESOLVED, 2026-08-26.** No — see the empirical gate result in §1 and `DcrScopeStrippingCharacterizationIT`. Realm-default attachment survives only when the DCR body omits `scope` entirely, which no real client does. This is why §2 decision (b) and §3a now specify a `ClientRegistrationPolicy` as the mechanism, not a contingency. **Update for 26.8+:** DCR now keeps realm defaults (keycloak#50807), but that doesn't reopen this — a realm default would also hit non-DCR clients under `strict=true`, so the scope stays off the realm defaults and the policy stays (§2 decision (b), 26.8 note).
 2. ~~**`TokenIntrospectionTokenMapper` — needed?**~~ **RESOLVED, 2026-08-26: no.** Introspection is out of scope for this mapper — Keycloak's `AccessTokenIntrospectionProvider` already preserves the original `aud` from the issued access token, so this mapper doesn't need to run again to get the audience into the introspection response. Implementing the interface would only add a failure mode: a strict-mode reject inside `setClaim` firing during introspection surfaces as an unhandled HTTP 500 (the interface has no declared exception / clean-error path the way the token endpoint does), not the `invalid_target` error a client would see at `/token`. The mapper implements `OIDCAccessTokenMapper` only.
 
 **Resolved, not open:** `strict` defaults to `true` everywhere (code default and realm config) — see §4. **Resolved, 2026-08-26 (Anatoly):** mcpwarp runs its own Keycloak instance, separate from ankimcp — this is the deployment topology this design assumes throughout (§1, §7). If that ever changes, the only requirement carried forward is a dedicated `mcpwarp` realm on the shared instance (§7); the mapper and policy work identically either way since both are per-realm config, not per-image behavior.

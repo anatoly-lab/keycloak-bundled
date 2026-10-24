@@ -13,7 +13,7 @@
 # Kubernetes manifest. Bump this repo and the consuming deployment in lockstep
 # (see CLAUDE.md: "Example consumer: AnkiMCP" for one concrete instance of this
 # coordination rule).
-ARG KC_VERSION=26.7.5
+ARG KC_VERSION=26.8.1
 # Upstream plugin commit (Herdo/keycloak-remember-me-authenticator). Surfaced
 # as an OCI label so a deployed image can be traced back to its source revision.
 ARG PLUGIN_GIT_SHA=de35b36
@@ -80,6 +80,10 @@ COPY --from=builder /build/target/keycloak-remember-me-authenticator.jar \
 # the events/tags selection (event-metrics-user-events/-tags) is runtime and
 # stays in the consuming deployment.
 #
+# scim-api is enabled by default since 26.8.0; disabled here because no
+# consumer uses SCIM, so its per-realm endpoints stay off the attack surface.
+# Features are build-time (FeatureOptions.java, buildTime(true)).
+#
 # Per-provider kill switches (docs/design/2026-08-25-resource-audience-mapper.md
 # §4/§4a) -- build-time-only options, so they must be appended to the kc.sh
 # build command below, not passed to `start`. Emergency lever if either SPI
@@ -90,6 +94,7 @@ RUN /opt/keycloak/bin/kc.sh build \
     --db=postgres \
     --health-enabled=true \
     --event-metrics-user-enabled=true \
+    --features-disabled=scim-api \
     --metrics-enabled=true
 
 

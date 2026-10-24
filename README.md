@@ -13,6 +13,7 @@ Keycloak's built-in "Remember Me" checkbox lives on the username/password form. 
 - A `resource-audience` OIDC protocol mapper plus a `resource-audience-scope` client-registration policy, for RFC 8707 resource-indicator support on dynamically-registered MCP clients. See `docs/design/2026-08-25-resource-audience-mapper.md`. Both are per-realm configuration — the image ships the provider classes, but they're inert unless a realm's config actually attaches the scope/mapper/policy (see "Deployment topology" below). The mapper only applies to the authorization-code flow (and its refreshes) — not device flow; see the design doc's "Known limitations" section.
 - An "optimized" server: `kc.sh build` runs at image-build time so Quarkus augmentation is already done on container start.
 - User-event metrics plumbing enabled at build (`--event-metrics-user-enabled=true`); counters appear once the consuming deployment selects events to track, with bounded cardinality and tags defaulting to realm.
+- The `scim-api` feature (on by default since Keycloak 26.8.0) disabled at build (`--features-disabled=scim-api`).
 
 No secrets live in this repo. The image is pushed to GHCR (GitHub Container Registry) using the workflow's auto-provisioned `${{ secrets.GITHUB_TOKEN }}` and `${{ github.actor }}` — no PAT, robot account, or repo-level secret is configured.
 
@@ -27,7 +28,7 @@ No secrets live in this repo. The image is pushed to GHCR (GitHub Container Regi
 
 ```bash
 docker build \
-  --build-arg KC_VERSION=26.7.5 \
+  --build-arg KC_VERSION=26.8.1 \
   --build-arg PLUGIN_GIT_SHA=de35b36 \
   --build-arg VCS_REF=$(git rev-parse HEAD) \
   --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
@@ -40,7 +41,7 @@ Build args (all declared in the `Dockerfile`):
 
 | Arg | Default | Purpose |
 | --- | --- | --- |
-| `KC_VERSION` | `26.7.5` | Keycloak base image tag. Must match the Keycloak Operator version deployed by the consuming Kubernetes manifest. |
+| `KC_VERSION` | `26.8.1` | Keycloak base image tag. Must match the Keycloak Operator version deployed by the consuming Kubernetes manifest. |
 | `PLUGIN_GIT_SHA` | `de35b36` | Upstream Herdo commit, surfaced as an OCI label for traceability. |
 | `VCS_REF` | `local` | Git SHA of this repo. CI sets it; local builds may leave the default. |
 | `BUILD_DATE` | `unknown` | RFC3339 timestamp. CI sets it. |
