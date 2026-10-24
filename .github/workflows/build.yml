@@ -33,7 +33,7 @@ on:
       kc_version:
         description: 'Keycloak version (must match the Keycloak Operator version deployed by the consuming Kubernetes manifest)'
         required: false
-        default: '26.7.5'
+        default: '26.8.1'
       plugin_git_sha:
         description: 'Upstream Herdo/keycloak-remember-me-authenticator commit, for the OCI label'
         required: false
@@ -64,7 +64,7 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/keycloak-bundled
   # Fallback defaults for non-dispatch triggers. Keep in sync with the
   # workflow_dispatch input defaults above.
-  DEFAULT_KC_VERSION: '26.7.5'
+  DEFAULT_KC_VERSION: '26.8.1'
   DEFAULT_PLUGIN_GIT_SHA: 'de35b36'
 
 jobs:
@@ -740,6 +740,56 @@ jobs:
             exit 1
           fi
           echo "OK: no 'build time options differ' warning in container logs."
+
+      - name: Assert scim-api feature is disabled
+        # The Dockerfile bakes --features-disabled=scim-api (on by default since
+        # 26.8.0). Only `start --optimized` honors baked features -- `start-dev`
+        # re-runs the build with defaults -- so this check lives here, not in
+        # smoke-test. /admin/serverinfo lists every feature, enabled or not, as
+        # {name: <Profile.Feature enum name>, enabled: <bool>, ...}
+        # (ServerInfoAdminResource.getFeatureRep, 26.8.1), hence "SCIM_API",
+        # not the CLI id "scim-api". Fails if the entry is enabled OR missing.
+        # Main listener is HTTPS on 8443 with the self-signed cert, hence -k.
+        run: |
+          set -euo pipefail
+
+          TOKEN_JSON="$(
+            curl --silent --fail --show-error -k --max-time 10 \
+              -X POST https://localhost:8443/realms/master/protocol/openid-connect/token \
+              -H 'Content-Type: application/x-www-form-urlencoded' \
+              -d 'grant_type=password' \
+              -d 'client_id=admin-cli' \
+              -d 'username=admin' \
+              -d 'password=admin'
+          )"
+          ACCESS_TOKEN="$(echo "${TOKEN_JSON}" | jq -r '.access_token')"
+          if [[ -z "${ACCESS_TOKEN}" || "${ACCESS_TOKEN}" == "null" ]]; then
+            echo "::error::Failed to obtain admin token. Response:"
+            echo "${TOKEN_JSON}"
+            exit 1
+          fi
+
+          SERVERINFO_JSON="$(
+            curl --silent --fail --show-error -k --max-time 10 \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+              https://localhost:8443/admin/serverinfo
+          )"
+
+          SCIM_ENABLED="$(echo "${SERVERINFO_JSON}" | jq -r '[.features[]? | select(.name == "SCIM_API") | .enabled] | if length == 1 then (.[0] | tostring) else "missing" end')"
+          case "${SCIM_ENABLED}" in
+            false)
+              echo "OK: SCIM_API is disabled."
+              ;;
+            true)
+              echo "::error::SCIM_API is enabled. The Dockerfile's kc.sh build must pass --features-disabled=scim-api."
+              exit 1
+              ;;
+            *)
+              echo "::error::SCIM_API not found exactly once in /admin/serverinfo features. Feature names present:"
+              echo "${SERVERINFO_JSON}" | jq -r '.features[]?.name' || echo "${SERVERINFO_JSON}"
+              exit 1
+              ;;
+          esac
 
       - name: Dump container logs on failure
         if: failure()
