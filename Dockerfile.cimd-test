@@ -1,0 +1,227 @@
+# syntax=docker/dockerfile:1.7
+#
+# DEV-ONLY TEST VARIANT -- NEVER MERGE, NEVER PUBLISH THROUGH build.yml.
+#
+# Same image as ./Dockerfile (Keycloak + Herdo's `remember-me` SPI + the same
+# kc.sh build flags) plus:
+#   a) upstream Keycloak commit CIMD_PATCH_SHA ("Ignore unknown properties when
+#      parsing Client ID Metadata Documents", keycloak#51235; merged to keycloak
+#      main as 3ae27d6573a4) applied on top of tag KC_VERSION -- production file
+#      only, the test files are skipped;
+#   b) the `cimd` feature baked in at kc.sh build time.
+#
+# Intended, output-neutral delta vs ./Dockerfile: the builder stage runs on
+# --platform=$BUILDPLATFORM (it only emits JVM bytecode).
+#
+# Five stages:
+#   1. builder    -- Maven compiles the vendored plugin (identical to prod).
+#   2. kcstock    -- stock Keycloak image, used only as the javac classpath and
+#                    the source of the jar being patched.
+#   3. cimdpatch  -- applies the upstream diff to the KC_VERSION source of one
+#                    class, recompiles it, and swaps it into the stock jar.
+#   4. kcbuild    -- patched jar + provider, then `kc.sh build`.
+#   5. runtime    -- fresh Keycloak base + the augmented /opt/keycloak/ tree.
+#
+# Stages 1-3 run on $BUILDPLATFORM once per build, so every target arch gets a
+# byte-identical patched jar. The stock jar is identical across arches.
+#
+# Push-only file: VCS_REF and IMAGE_SOURCE must be passed, the build fails on
+# their placeholder defaults.
+
+# ---- Build args -------------------------------------------------------------
+ARG KC_VERSION=26.8.1
+# Commit the KC_VERSION tag must resolve to (asserted in cimdpatch).
+ARG KC_SOURCE_COMMIT=24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b
+ARG PLUGIN_GIT_SHA=de35b36
+# Full SHA: fetched by exact object id, so it cannot drift.
+ARG CIMD_PATCH_SHA=3ae27d6573a41facc37d7d697ec158fe53944eaf
+ARG KC_SOURCE_REPO=https://github.com/keycloak/keycloak.git
+
+
+# ---- Stage 1: Maven builder -------------------------------------------------
+FROM --platform=$BUILDPLATFORM maven:3.9.15-eclipse-temurin-21 AS builder
+
+WORKDIR /build
+
+COPY src/pom.xml ./pom.xml
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -ntp dependency:go-offline
+
+COPY src/src/ ./src/
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -ntp -Dmaven.test.skip=true package
+
+RUN test -f /build/target/keycloak-remember-me-authenticator.jar
+
+
+# ---- Stage 2: stock Keycloak ------------------------------------------------
+FROM --platform=$BUILDPLATFORM quay.io/keycloak/keycloak:${KC_VERSION} AS kcstock
+
+
+# ---- Stage 3: single-class patch of keycloak-services -----------------------
+# Only one production source file changes, so instead of rebuilding the whole
+# services module we recompile that file against the exact jars shipped in the
+# image and replace its classes inside the stock jar. Everything else in the
+# jar stays byte-identical to upstream.
+#
+# JDK 17 on purpose: the stock jar is Build-Jdk-Spec 17, and JDK 21's javac
+# emits MethodParameters for mandated/synthetic params (JDK-8292275) even with
+# --release 17, which the control compile below catches.
+FROM --platform=$BUILDPLATFORM maven:3.9.15-eclipse-temurin-17 AS cimdpatch
+
+ARG KC_VERSION
+ARG KC_SOURCE_COMMIT
+ARG CIMD_PATCH_SHA
+ARG KC_SOURCE_REPO
+ARG CIMD_PKG=org/keycloak/protocol/oauth2/cimd/clientpolicy/executor
+ARG CIMD_CLASS=AbstractClientIdMetadataDocumentExecutor
+ARG SERVICES_JAR=org.keycloak.keycloak-services-${KC_VERSION}.jar
+ARG JAVAC_FLAGS="--release 17 -g -proc:none -implicit:none -nowarn"
+ENV LC_ALL=C
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# javap view of a class with constant-pool numbering stripped, so two
+# compilations of the same source compare equal.
+COPY --chmod=755 <<'EOF' /usr/local/bin/javap-norm
+#!/bin/bash
+set -euo pipefail
+javap -v -p -c -cp "$1" "$2" \
+  | sed -e '/^Classfile /d' -e '/Last modified/d' -e '/SHA-256 checksum/d' -e '/MD5 checksum/d' \
+  | awk '/^Constant pool:/{skip=1; next} skip && /^[{]/{skip=0} !skip' \
+  | sed -E 's/#[0-9]+(:#[0-9]+)?/#/g'
+EOF
+
+# Member signatures + constants, one line per member (descriptor joined in).
+COPY --chmod=755 <<'EOF' /usr/local/bin/javap-members
+#!/bin/bash
+set -euo pipefail
+javap -p -s -constants -cp "$1" "$2" \
+  | awk '/^ *descriptor:/{print prev " |" $0; prev=""; next}
+         {if (prev != "") print prev; prev=$0}
+         END{if (prev != "") print prev}' \
+  | sort -u
+EOF
+
+COPY --from=kcstock /opt/keycloak/lib/lib/boot/ /kcboot/
+COPY --from=kcstock /opt/keycloak/lib/lib/main/ /kclib/
+
+# Fetch the tag and the patch commit (trees only, blobs on demand). Guards:
+# tag resolves to KC_SOURCE_COMMIT; the commit touches exactly one non-test
+# file. `git apply` (no -3, no fuzz) refuses any hunk whose context doesn't
+# match the tag, so a non-clean cherry-pick fails the build.
+WORKDIR /kc
+RUN <<'EOF'
+set -euo pipefail
+SRC="services/src/main/java/${CIMD_PKG}/${CIMD_CLASS}.java"
+git init -q .
+git remote add origin "${KC_SOURCE_REPO}"
+git fetch -q --depth=1 --filter=blob:none origin "refs/tags/${KC_VERSION}:refs/tags/${KC_VERSION}"
+git fetch -q --depth=2 --filter=blob:none origin "${CIMD_PATCH_SHA}"
+test "$(git rev-parse "${KC_VERSION}^{commit}")" = "${KC_SOURCE_COMMIT}"
+git diff --name-only "${CIMD_PATCH_SHA}^" "${CIMD_PATCH_SHA}" \
+  | grep -vE '(^|/)src/test/|^test-framework/|^tests/' > /tmp/prod-files.txt
+echo "${SRC}" | diff -u - /tmp/prod-files.txt
+mkdir -p "/ctl/$(dirname "${SRC}")" "/src/$(dirname "${SRC}")"
+git show "${KC_VERSION}:${SRC}" > "/ctl/${SRC}"
+cp "/ctl/${SRC}" "/src/${SRC}"
+git diff "${CIMD_PATCH_SHA}^" "${CIMD_PATCH_SHA}" -- "${SRC}" > /src/cimd.patch
+git -C /src apply -v cimd.patch
+git log -1 --format=%cI "${KC_SOURCE_COMMIT}" > /jar-date
+EOF
+
+# Compile the unpatched (control) and patched sources with identical flags.
+# Control must match the shipped classes after constant-pool normalisation:
+# proves the tag source, JDK and flags reproduce the stock binary.
+WORKDIR /stock
+RUN <<'EOF'
+set -euo pipefail
+SRC="services/src/main/java/${CIMD_PKG}/${CIMD_CLASS}.java"
+jar xf "/kclib/${SERVICES_JAR}" "${CIMD_PKG}/"
+if jar tf "/kclib/${SERVICES_JAR}" | grep -E '^META-INF/(versions/|jandex\.idx)'; then
+  echo "services jar has multi-release copies or a jandex index; patch would be incomplete" >&2; exit 1
+fi
+javac ${JAVAC_FLAGS} -cp '/kcboot/*:/kclib/*' -d /ctlclasses "/ctl/${SRC}"
+javac ${JAVAC_FLAGS} -cp '/kcboot/*:/kclib/*' -d /classes "/src/${SRC}"
+find "${CIMD_PKG}" -name "${CIMD_CLASS}.class" -o -name "${CIMD_CLASS}\$*.class" | sort > /tmp/stock.txt
+test -s /tmp/stock.txt
+for d in /ctlclasses /classes; do
+  find "$d/${CIMD_PKG}" -name '*.class' | sed "s|^$d/||" | sort | diff -u /tmp/stock.txt -
+done
+while read -r f; do
+  c=$(echo "${f%.class}" | tr / .)
+  javap-norm /stock "$c" > /tmp/a; javap-norm /ctlclasses "$c" > /tmp/b
+  diff -u /tmp/a /tmp/b || { echo "control compile differs: $c" >&2; exit 1; }
+  javap-members /stock "$c" > /tmp/a; javap-members /classes "$c" > /tmp/b
+  removed=$(comm -23 /tmp/a /tmp/b)
+  [ -z "$removed" ] || { echo "patched $c drops/changes members:" >&2; echo "$removed" >&2; exit 1; }
+  echo "ok: $c (control identical, +$(comm -13 /tmp/a /tmp/b | wc -l) members)"
+done < /tmp/stock.txt
+EOF
+
+RUN mkdir /out \
+ && cp "/kclib/${SERVICES_JAR}" /out/ \
+ && jar --update --date="$(cat /jar-date)" --file "/out/${SERVICES_JAR}" -C /classes "${CIMD_PKG}" \
+ && sha256sum "/out/${SERVICES_JAR}"
+
+
+# ---- Stage 4: Keycloak augmentation (kc.sh build) ---------------------------
+FROM quay.io/keycloak/keycloak:${KC_VERSION} AS kcbuild
+
+ARG KC_VERSION
+ARG VCS_REF=local
+ARG IMAGE_SOURCE=https://github.com/REPLACE-ME/keycloak-bundled
+ARG CIMD_PKG=org/keycloak/protocol/oauth2/cimd/clientpolicy/executor
+ARG CIMD_CLASS=AbstractClientIdMetadataDocumentExecutor
+
+RUN if [ -z "${VCS_REF}" ] || [ "${VCS_REF}" = local ] \
+       || [ "${IMAGE_SOURCE#*REPLACE-ME}" != "${IMAGE_SOURCE}" ]; then \
+      echo "pass --build-arg VCS_REF and IMAGE_SOURCE" >&2; exit 1; \
+    fi
+
+# Overwrite under the original filename (it is referenced by the Quarkus
+# classpath); ownership/mode match the stock file.
+COPY --from=cimdpatch --chown=1000:0 --chmod=664 \
+     /out/org.keycloak.keycloak-services-${KC_VERSION}.jar \
+     /opt/keycloak/lib/lib/main/
+
+COPY --from=builder /build/target/keycloak-remember-me-authenticator.jar \
+                    /opt/keycloak/providers/
+
+# Same flags as ./Dockerfile plus --features=cimd. Build-time options must
+# still match the consumer's runtime env (see ./Dockerfile).
+RUN /opt/keycloak/bin/kc.sh build \
+    --db=postgres \
+    --health-enabled=true \
+    --event-metrics-user-enabled=true \
+    --features=cimd \
+    --features-disabled=scim-api \
+    --metrics-enabled=true
+
+# The patched class must live in exactly one jar (the swapped services jar),
+# including multi-release copies and anything kc.sh build generated.
+RUN found=$(grep -rlaF --include='*.jar' "${CIMD_PKG}/${CIMD_CLASS}.class" \
+              /opt/keycloak/lib /opt/keycloak/providers) \
+ && echo "${found}" \
+ && test "${found}" = "/opt/keycloak/lib/lib/main/org.keycloak.keycloak-services-${KC_VERSION}.jar"
+
+
+# ---- Stage 5: Runtime -------------------------------------------------------
+FROM quay.io/keycloak/keycloak:${KC_VERSION}
+
+ARG KC_VERSION
+ARG PLUGIN_GIT_SHA
+ARG CIMD_PATCH_SHA
+ARG VCS_REF=local
+ARG BUILD_DATE=unknown
+ARG IMAGE_SOURCE=https://github.com/REPLACE-ME/keycloak-bundled
+
+COPY --from=kcbuild /opt/keycloak/ /opt/keycloak/
+
+LABEL org.opencontainers.image.title="keycloak-bundled-cimd-test" \
+      org.opencontainers.image.description="DEV-ONLY: Keycloak ${KC_VERSION} + upstream ${CIMD_PATCH_SHA} (keycloak#51235) + cimd feature enabled + Herdo's remember-me SPI. Not for production." \
+      org.opencontainers.image.source="${IMAGE_SOURCE}" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.base.name="quay.io/keycloak/keycloak:${KC_VERSION}" \
+      org.opencontainers.image.version="dev-cimd-test+kc${KC_VERSION}.patch-${CIMD_PATCH_SHA}.rememberme-${PLUGIN_GIT_SHA}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
