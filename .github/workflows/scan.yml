@@ -72,7 +72,7 @@ jobs:
       # GitHub Actions doesn't allow ${{ env.X }} references inside an `env:`
       # block declaration (env values can only be composed in `run:` steps),
       # so this is built from `github.repository_owner` directly rather than
-      # from the workflow-level REGISTRY/IMAGE_NAME env vars.
+      # from the workflow-level REGISTRY env var.
       IMAGE_REF: ghcr.io/${{ github.repository_owner }}/keycloak-bundled:${{ matrix.tag }}
 
     steps:
