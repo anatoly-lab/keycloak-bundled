@@ -1,3 +1,17 @@
 # Reviewable, expiring exceptions for the CI vulnerability gate. One CVE per
 # line, each with: why it is a false positive or not applicable, and a
 # re-check date.
+
+# CVE-2026-102554 — com.google.guava:guava 33.6.0-jre, bundled by upstream
+# Keycloak (opt/keycloak/lib/lib/main/com.google.guava.guava-33.6.0-jre.jar;
+# not a dependency of our provider jar). Fixed in 33.7.2; no Keycloak release
+# ships it (26.8.1-2 still has 33.6.0-jre). Needs Java-native deserialization
+# of a crafted CompactHashMap/CompactHashSet/MapMakerInternalMap stream.
+# Infinispan 16.0.15 in the image marshals with ProtoStream (no JBoss
+# Marshalling jar shipped). Keycloak 26.8.1's own ObjectInputStream reads are
+# Kerberos credential delegation (allow-list filter, Kerberos classes only)
+# and the Twitter IdP auth note (Keycloak-written, server-side). Third-party
+# libs not audited; upstream assessment: "most probably not affected"
+# (keycloak#54110). Remove when the KC base ships guava >= 33.7.2 (added
+# 2026-11-04; re-check by 2026-12-04 if no bump).
+CVE-2026-102554

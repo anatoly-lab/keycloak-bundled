@@ -24,6 +24,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>21</maven.compiler.release>
         <version.keycloak>26.8.1</version.keycloak>
+        <version.testcontainers>1.21.4</version.testcontainers>
     </properties>
 
     <dependencyManagement>
@@ -133,17 +134,23 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+            1.21.4 is the first 1.x release that works with Docker Engine 29+ (ubuntu-26.04
+            runners) out of the box. With no Docker API version configured, 1.21.3 always
+            uses API 1.32, which Docker 29 rejects as below its minimum; 1.21.4 pings with
+            API 1.44 first and falls back to 1.32 only if that fails (testcontainers-java#11346).
+        -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
-            <version>1.21.3</version>
+            <version>${version.testcontainers}</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <version>1.21.3</version>
+            <version>${version.testcontainers}</version>
             <scope>test</scope>
         </dependency>
 
