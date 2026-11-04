@@ -1,15 +1,15 @@
 ---
 # Build & push the custom Keycloak image (Keycloak + Herdo remember-me SPI).
 #
-# See CLAUDE.md and the project brief for the why. This workflow produces a
-# reproducible OCI image, pushes it to GHCR under multiple tags, then runs a
-# pair of downstream verification jobs (boot smoke test + Testcontainers
-# integration tests). On `v*` tag pushes, a final `release` job promotes the
-# already-verified immutable SHA tag to the human-readable semver tag and
-# publishes a GitHub Release -- only after smoke + integration tests pass.
-# Pull requests get their own `pr-build` job: a local (unpushed) image build
-# plus the same Testcontainers integration tests, run against that PR's own
-# image -- no GHCR push, no :latest/date tags touched.
+# See CLAUDE.md for the why. This workflow produces a reproducible OCI image,
+# pushes it to GHCR under multiple tags, then runs a pair of downstream
+# verification jobs (boot smoke test + Testcontainers integration tests).
+# On `v*` tag pushes, a final `release` job promotes the already-verified
+# immutable SHA tag to the human-readable semver tag and publishes a GitHub
+# Release -- only after smoke + integration tests pass. Pull requests get
+# their own `pr-build` job: a local (unpushed) image build plus the same
+# Testcontainers integration tests, run against that PR's own image -- no
+# GHCR push, no :latest/date tags touched.
 #
 # Triggers:
 #   - push to main      -> rebuild on every merge
@@ -91,8 +91,8 @@ jobs:
         # raven-actions/actionlint is the conventional wrapper around rhysd's
         # actionlint CLI. The rhysd/actionlint repo itself is a Go CLI with no
         # action.yml, so a wrapper is required if we want `uses:` semantics.
-        # Pinned to a specific patch -- raven-actions/actionlint doesn't
-        # publish a floating `v2` tag either.
+        # Pinned to a specific patch for reproducibility (a floating `v2`
+        # tag exists; we don't track it).
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
 
   build-and-push:
@@ -133,9 +133,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        # v6 is a Node 24 runtime bump (no input/output changes affecting our
-        # usage). ubuntu-latest ships runner >= v2.327.1, which satisfies the
-        # Node 24 requirement.
+        # v7 refuses fork-PR checkouts under pull_request_target/workflow_run
+        # (neither triggers this workflow) and moves the action to ESM -- no
+        # input/output changes affecting our usage. It still runs on Node 24;
+        # ubuntu-latest ships runner >= v2.327.1, which satisfies that.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Compute build metadata
@@ -487,8 +488,7 @@ jobs:
         # `start --optimized` requires a configured DB and hostname. For a
         # boot smoke test we only need the server to come up and answer the
         # admin API, so `start-dev` (which uses the in-memory dev DB and
-        # disables strict hostname checks) is the right call. The Dockerfile
-        # comment already calls this out as the smoke-testing path.
+        # disables strict hostname checks) is the right call.
         run: |
           set -euo pipefail
           docker run -d --name kc-smoke \
@@ -817,10 +817,11 @@ jobs:
       packages: read
 
     env:
-      # The pom-level Failsafe configuration is expected to read this system
-      # property and pass it to Testcontainers' `GenericContainer(...)` ctor.
-      # Owned by the other agent's pom.xml + *IT.java changes -- we just
-      # surface the value here.
+      # Passed to `mvn verify` as `-Dimage.ref` below. No pom config is
+      # involved: Failsafe promotes Maven -D user properties to system
+      # properties in the forked test JVM (promoteUserPropertiesToSystemProperties,
+      # default true), and each *IT.java feeds System.getProperty("image.ref")
+      # into Testcontainers' `GenericContainer(...)` ctor.
       KC_IMAGE: ${{ needs.build-and-push.outputs.image_ref_sha }}
 
     steps:
@@ -859,8 +860,7 @@ jobs:
         # than try `-pl src` -- the latter would require src/ to be a
         # declared <module> in a parent pom, which it isn't.
         # `-B -ntp` is non-interactive batch + no transfer progress, the
-        # standard CI duo. The `image.ref` system property is the agreed
-        # handshake with the *IT.java tests: they read it via
+        # standard CI duo. The *IT.java tests read `image.ref` via
         # System.getProperty and feed it into Testcontainers.
         working-directory: src
         run: |
@@ -1007,11 +1007,11 @@ jobs:
         #
         # `imagetools inspect` exits 0 when the tag exists (== overwrite
         # attempted, must fail) and non-zero on 404 or any other error (==
-        # treat as "tag absent, safe to proceed", per the task spec). Note:
-        # this conflates 404 with transient registry errors, which is a
-        # known limitation -- a flaky inspect would let promotion proceed.
-        # The promote step's own server-side write will surface registry
-        # errors anyway, so the blast radius is small.
+        # treat as "tag absent, safe to proceed"). Note: this conflates 404
+        # with transient registry errors, which is a known limitation -- a
+        # flaky inspect would let promotion proceed. The promote step's own
+        # server-side write will surface registry errors anyway, so the
+        # blast radius is small.
         #
         # `set -euo pipefail` would normally abort on the first non-zero
         # exit, so the inspect is wrapped in `if !` to capture its status
@@ -1058,7 +1058,7 @@ jobs:
         #
         # `body` is pre-pended to the auto-generated commit changelog when
         # `generate_release_notes: true` is also set -- verified against
-        # softprops/action-gh-release v3.0.0 README ("If body is specified,
+        # softprops/action-gh-release v3.0.3 README ("If body is specified,
         # the body will be pre-pended to the automatically generated
         # notes."). Net effect: the Image section below renders FIRST on
         # the release page, followed by the auto-generated "What's
