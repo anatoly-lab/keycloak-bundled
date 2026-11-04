@@ -828,10 +828,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21 with Maven cache
-        # v5 is a Node 24 runtime bump only; `distribution` / `java-version` /
-        # `cache` inputs are unchanged. The `cache: maven` flag wires the
-        # built-in cache around ~/.m2 keyed on the workspace's pom.xml hash --
-        # it auto-discovers our `src/pom.xml`.
+        # v6 keeps the Node 24 runtime from v5; `distribution` / `java-version` /
+        # `cache` inputs are unchanged (v6 only drops the legacy `adopt*`
+        # distributions and renames inputs we don't use). The `cache: maven`
+        # flag wires the built-in cache around ~/.m2 keyed on the hash of
+        # `**/pom.xml` -- it auto-discovers our `src/pom.xml`. Since v6 it
+        # also caches the JDK unless `cache-jdk: false`; a no-op for us while
+        # Temurin 21 is preinstalled on the runner.
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
