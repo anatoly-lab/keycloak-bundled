@@ -1,11 +1,10 @@
 ---
-# Keeps CI actions and build dependencies patched. The Keycloak base image
-# itself is NOT tracked here -- its `FROM` is ARG-interpolated
-# (quay.io/keycloak/keycloak:${KC_VERSION}) so Dependabot can't see a literal
-# tag to bump, and it must be bumped manually in lockstep with the consuming
-# Keycloak Operator version anyway (see CLAUDE.md: "Example consumer:
-# AnkiMCP"). The `docker` ecosystem below only picks up the Maven builder
-# stage's pinned `FROM maven:...` tag.
+# Keeps CI actions and Maven build dependencies patched. No Docker image is
+# auto-bumped: the Keycloak base `FROM` is ARG-interpolated
+# (quay.io/keycloak/keycloak:${KC_VERSION}) and must move in lockstep with the
+# consuming Keycloak Operator (see CLAUDE.md: "Example consumer: AnkiMCP"),
+# and the Maven builder tag is ignored below. The `docker` ecosystem stays
+# enabled only so that any new literal `FROM` gets tracked.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -21,13 +20,13 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # Builder JDK tracks the Keycloak runtime JDK (21), bumped manually
-      # alongside the base image; see CLAUDE.md. The `eclipse-temurin-<N>`
-      # suffix isn't real semver, so Dependabot's major/minor classification
-      # for this tag is unreliable -- both are ignored to be safe. Only
-      # patch-level (3.9.x) Maven updates are auto-PR'd.
+      # Builder JDK tracks the Keycloak runtime JDK (21). dependabot-core parses
+      # `-eclipse-temurin-<N>` as a version segment (3.9.15-eclipse-temurin-21
+      # -> 3.9.15.21), so no `versions`/`update-types` range can pin the JDK
+      # suffix while allowing Maven patches. The builder is bumped by hand
+      # alongside Keycloak bumps (see CLAUDE.md); it never ships in the
+      # runtime image, only the JAR it builds does.
       - dependency-name: "maven"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: maven
     directory: /src
